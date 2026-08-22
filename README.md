@@ -95,10 +95,23 @@ npm run preview
 - `open-next.config.ts` — OpenNext Cloudflare adapter
 - `npm run cf-typegen` — สร้าง `cloudflare-env.d.ts` จาก wrangler.jsonc
 
+## Async Jobs (Sprint 5 — `workers/jobs/`)
+
+Worker แยกตัวที่สอง (`moment-os-jobs-worker`) ใช้ D1 ตัวเดียวกัน ทำหน้าที่:
+
+- **Queue consumer** `moment-os-jobs` — ประมวลผล job ตาม contract ใน `lib/jobs/contracts.ts` (DETECT_MOMENT ทำงานแล้วแบบ rule-based Level 2 พร้อม evidence + dedup; SCORE/RECOMMEND/CRM/ERP/NEXT เป็น no-op รอ Sprint 6)
+- **Cron Triggers** — 06:00 ICT สแกนวันครบรอบ (T-60 → EBM Milestone), 07:00 ICT สแกน no-order ≥180 วัน (→ EBM Return) — idempotent ทั้งคู่
+- **Signal ingestion** — `POST /api/signals` ใน main app: บันทึก `moment_signals` แล้ว enqueue DETECT_MOMENT (หน้าเว็บไม่เคยรัน detection แบบ synchronous)
+
+```bash
+npm run jobs:dev      # local + --test-scheduled (curl /__scheduled?cron=...)
+npm run jobs:deploy   # deploy jobs worker
+```
+
 ## Phase ถัดไป (ตามแผน §53–60)
 
-- Sprint 5: Queues (AI / CRM / ERP jobs) — producer binding มีแล้ว
-- Sprint 6: moment_signals + AI Detection + evidence UI (ตารางพร้อมแล้ว)
-- Sprint 7: Auth + RBAC + organization scope (ทุก query scoped organization_id แล้ว)
+- Sprint 6: AI Detection แทน keyword rules (contract `DetectionResult` เดิม) + evidence UI + AI Sales Brief
+- Sprint 5b: CRM_SYNC / ERP_SYNC translation layer
+- Sprint 7: Auth + RBAC (ทุก query scoped organization_id แล้ว) — **ต้องทำก่อนใส่ข้อมูลลูกค้าจริง**; ระหว่างนี้ควรครอบด้วย Cloudflare Access
 
 Stack: Next.js 16 (App Router, Turbopack) · TypeScript · Tailwind 4 · zod · Vitest · @opennextjs/cloudflare · Wrangler · D1/R2/Queues

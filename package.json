@@ -12,7 +12,9 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "generate-seed": "tsx scripts/generate-seed.ts"
+    "generate-seed": "tsx scripts/generate-seed.ts",
+    "jobs:dev": "wrangler dev --config workers/jobs/wrangler.jsonc --test-scheduled",
+    "jobs:deploy": "wrangler deploy --config workers/jobs/wrangler.jsonc"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.20.2",
