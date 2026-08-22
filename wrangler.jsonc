@@ -14,11 +14,15 @@
     "enabled": true
   },
 
+  "vars": {
+    "MOMENT_OS_DATA_SOURCE": "d1"
+  },
+
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "moment-os",
-      "database_id": "REPLACE_WITH_DATABASE_ID",
+      "database_id": "600b9e6e-55ae-4415-8a2c-9ebbd4446063",
       "migrations_dir": "migrations"
     }
   ],
