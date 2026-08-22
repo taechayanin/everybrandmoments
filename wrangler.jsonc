@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "moment-os",
+  "name": "everybrandmoments",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
@@ -38,7 +38,7 @@
     "producers": [
       {
         "binding": "MOMENT_JOBS",
-        "queue": "moment-os-jobs"
+        "queue": "everybrandmoments-jobs"
       }
     ]
   }

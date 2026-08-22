@@ -67,7 +67,7 @@ export function Sidebar() {
         </span>
         <div>
           <p className="text-sm font-extrabold tracking-tight text-slate-900">MOMENT OS</p>
-          <p className="text-[10px] font-medium text-slate-400">Every Business Moments</p>
+          <p className="text-[10px] font-medium text-slate-400">Every Brand Moments</p>
         </div>
       </div>
       <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">

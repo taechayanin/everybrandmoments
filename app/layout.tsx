@@ -9,7 +9,7 @@ const notoThai = Noto_Sans_Thai({
 });
 
 export const metadata: Metadata = {
-  title: "Moment OS — Every Business Moments",
+  title: "Moment OS — Every Brand Moments",
   description:
     "Business Moment Operating System: รู้ว่า Moment อะไรกำลังเกิดขึ้น ใครได้รับผลกระทบ และควรเสนอ Solution อะไร",
 };

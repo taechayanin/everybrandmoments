@@ -1,6 +1,6 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "moment-os-jobs-worker",
+  "name": "everybrandmoments-jobs-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
@@ -20,7 +20,7 @@
   "queues": {
     "consumers": [
       {
-        "queue": "moment-os-jobs",
+        "queue": "everybrandmoments-jobs",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 3

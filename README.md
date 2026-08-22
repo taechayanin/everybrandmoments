@@ -1,6 +1,6 @@
-# MOMENT OS
+# EVERY BRAND MOMENTS — Moment OS
 
-**Business Moment Operating System** — Every Business Moments / Giftwise Group
+**Business Moment Operating System** — Every Brand Moments / Giftwise Group
 
 เปลี่ยนจากการขายแบบ "รอลูกค้าถามสินค้า" เป็น:
 

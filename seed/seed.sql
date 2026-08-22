@@ -20,7 +20,7 @@ DELETE FROM moment_discovery_questions;
 DELETE FROM master_moments;
 DELETE FROM users;
 DELETE FROM organizations;
-INSERT INTO organizations (id, name, created_at) VALUES ('ORG-001', 'Every Business Moments', '2026-08-22T00:00:00Z');
+INSERT INTO organizations (id, name, created_at) VALUES ('ORG-001', 'Every Brand Moments', '2026-08-22T00:00:00Z');
 INSERT INTO users (id, organization_id, name, nickname, role, center, created_at) VALUES ('USR-001', 'ORG-001', 'ณัฐพล วงศ์สุวรรณ', 'นัท', 'Management', NULL, '2026-08-22T00:00:00Z');
 INSERT INTO users (id, organization_id, name, nickname, role, center, created_at) VALUES ('USR-002', 'ORG-001', 'พิมพ์ชนก ศรีสมบูรณ์', 'พิม', 'Growth', NULL, '2026-08-22T00:00:00Z');
 INSERT INTO users (id, organization_id, name, nickname, role, center, created_at) VALUES ('USR-003', 'ORG-001', 'ธนกร เจริญกิจ', 'เต้', 'SDR', NULL, '2026-08-22T00:00:00Z');
