@@ -1,11 +1,13 @@
 import { MapPin } from "lucide-react";
 import { Card, PageHeader, SectionTitle, StatCard } from "@/components/ui";
-import { accountById } from "@/lib/data/accounts";
-import { APPOINTMENTS, CENTERS } from "@/lib/data/opportunities";
-import { userName } from "@/lib/data/users";
+import { getOfflineView } from "@/lib/application/offline/get-offline-view";
 import { baht, pct, shortDate } from "@/lib/format";
 
-export default function OfflineCenter() {
+export const dynamic = "force-dynamic";
+
+export default async function OfflineCenter() {
+  const view = await getOfflineView();
+
   return (
     <div>
       <PageHeader
@@ -14,14 +16,14 @@ export default function OfflineCenter() {
       />
 
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Appointments สัปดาห์นี้" value={APPOINTMENTS.length} />
+        <StatCard label="Appointments สัปดาห์นี้" value={view.bookings.length} />
         <StatCard
           label="Expected Wallet รวม"
-          value={baht(APPOINTMENTS.reduce((s, a) => s + a.expectedWallet, 0))}
+          value={baht(view.totalExpectedWallet)}
           accent="text-indigo-600"
         />
-        <StatCard label="Centers เปิดใช้งาน" value={CENTERS.length} />
-        <StatCard label="Avg Close Rate" value={pct(CENTERS.reduce((s, c) => s + c.closeRate, 0) / CENTERS.length)} accent="text-emerald-600" />
+        <StatCard label="Centers เปิดใช้งาน" value={view.centers.length} />
+        <StatCard label="Avg Close Rate" value={pct(view.avgCloseRate)} accent="text-emerald-600" />
       </div>
 
       {/* Routing Logic */}
@@ -52,32 +54,29 @@ export default function OfflineCenter() {
         <div>
           <SectionTitle title="Offline Bookings" subtitle="นัดหมายที่กำลังจะถึง" />
           <div className="space-y-2.5">
-            {APPOINTMENTS.map((a) => {
-              const acc = accountById.get(a.accountId)!;
-              return (
-                <Card key={a.id} className="p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-bold text-slate-900">{acc.name}</p>
-                    <span className="text-xs font-bold text-indigo-600">
-                      {shortDate(a.datetime)} · {a.datetime.slice(11, 16)} น.
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-600">{a.need}</p>
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-                    <span className="flex items-center gap-1">
-                      <MapPin size={11} /> {a.center}
-                    </span>
-                    <span>Consultant: {userName(a.consultantId)}</span>
-                    <span className="font-semibold text-slate-700">
-                      Expected {baht(a.expectedWallet)}
-                    </span>
-                  </div>
-                  <p className="mt-2 rounded-lg bg-slate-50 px-3 py-1.5 text-[11px] text-slate-500">
-                    🎒 Samples: {a.samples.join(" · ")}
-                  </p>
-                </Card>
-              );
-            })}
+            {view.bookings.map((a) => (
+              <Card key={a.id} className="p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-slate-900">{a.accountName}</p>
+                  <span className="text-xs font-bold text-indigo-600">
+                    {shortDate(a.datetime)} · {a.datetime.slice(11, 16)} น.
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600">{a.need}</p>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                  <span className="flex items-center gap-1">
+                    <MapPin size={11} /> {a.center}
+                  </span>
+                  <span>Consultant: {a.consultantName}</span>
+                  <span className="font-semibold text-slate-700">
+                    Expected {baht(a.expectedWallet)}
+                  </span>
+                </div>
+                <p className="mt-2 rounded-lg bg-slate-50 px-3 py-1.5 text-[11px] text-slate-500">
+                  🎒 Samples: {a.samples.join(" · ")}
+                </p>
+              </Card>
+            ))}
           </div>
         </div>
 
@@ -85,7 +84,7 @@ export default function OfflineCenter() {
         <div>
           <SectionTitle title="Branch / Center Dashboard" subtitle="ผลงานรายศูนย์เดือนนี้" />
           <div className="space-y-2.5">
-            {CENTERS.map((c) => (
+            {view.centers.map((c) => (
               <Card key={c.name} className="p-4">
                 <p className="text-sm font-bold text-slate-900">{c.name}</p>
                 <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-[11px] sm:grid-cols-6">

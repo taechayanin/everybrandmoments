@@ -1,4 +1,4 @@
-import type { LifecyclePhase, MasterMoment } from "@/lib/types";
+import type { LifecyclePhase, MasterMoment } from "./moment";
 
 export const LIFECYCLE_PHASES: { key: LifecyclePhase; no: string; label: string }[] = [
   { key: "START", no: "01", label: "Start" },
@@ -318,7 +318,7 @@ export const MASTER_MOMENTS: MasterMoment[] = [
   },
 ];
 
-export const momentByCode = new Map(MASTER_MOMENTS.map((m) => [m.code, m]));
+export const momentByCode = new Map<string, MasterMoment>(MASTER_MOMENTS.map((m) => [m.code, m]));
 
 export function momentColor(code: string): string {
   return momentByCode.get(code)?.color ?? "#94a3b8";

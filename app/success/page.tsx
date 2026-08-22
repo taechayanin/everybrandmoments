@@ -8,23 +8,14 @@ import {
   StatCard,
   StatusBadge,
 } from "@/components/ui";
-import { ACCOUNTS, accountById } from "@/lib/data/accounts";
-import { MOMENT_EVENTS } from "@/lib/data/events";
-import { momentByCode } from "@/lib/data/moments";
+import { getCustomerSuccessView } from "@/lib/application/customer-success/get-success-view";
+import { momentByCode } from "@/lib/domain/master-moments";
 import { baht, monthYear, shortDate } from "@/lib/format";
 
-export default function CustomerSuccess() {
-  const delivered = MOMENT_EVENTS.filter((e) => ["Won", "Delivery"].includes(e.status))
-    .sort((a, b) => b.expectedEventDate.localeCompare(a.expectedEventDate))
-    .slice(0, 8);
-  const atRisk = ACCOUNTS.filter((a) => a.health === "At Risk");
-  const healthy = ACCOUNTS.filter((a) => a.health === "Healthy");
-  const recoverEvents = MOMENT_EVENTS.filter(
-    (e) => e.momentType === "EBM Recover" && !["Won", "Lost"].includes(e.status),
-  );
-  const returnEvents = MOMENT_EVENTS.filter(
-    (e) => e.momentType === "EBM Return" && !["Won", "Lost"].includes(e.status),
-  );
+export const dynamic = "force-dynamic";
+
+export default async function CustomerSuccess() {
+  const view = await getCustomerSuccessView();
 
   return (
     <div>
@@ -34,10 +25,10 @@ export default function CustomerSuccess() {
       />
 
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Healthy Accounts" value={healthy.length} accent="text-emerald-600" />
-        <StatCard label="At-Risk Accounts" value={atRisk.length} accent="text-orange-600" />
-        <StatCard label="Recover กำลังดูแล" value={recoverEvents.length} accent="text-red-600" />
-        <StatCard label="Win-back Queue" value={returnEvents.length} accent="text-purple-600" />
+        <StatCard label="Healthy Accounts" value={view.healthyCount} accent="text-emerald-600" />
+        <StatCard label="At-Risk Accounts" value={view.atRisk.length} accent="text-orange-600" />
+        <StatCard label="Recover กำลังดูแล" value={view.recover.length} accent="text-red-600" />
+        <StatCard label="Win-back Queue" value={view.winback.length} accent="text-purple-600" />
       </div>
 
       <div className="grid gap-6 xl:grid-cols-2">
@@ -47,8 +38,7 @@ export default function CustomerSuccess() {
             subtitle="งานที่ส่งมอบแล้ว — ตั้ง Next Expected Moment ทุกงาน"
           />
           <div className="space-y-2.5">
-            {delivered.map((e) => {
-              const acc = accountById.get(e.accountId)!;
+            {view.delivered.map(({ event: e, account: acc }) => {
               const nextMoment = momentByCode.get(e.nextExpectedMoment);
               return (
                 <Card key={e.id} className="p-4">
@@ -85,24 +75,21 @@ export default function CustomerSuccess() {
           <div>
             <SectionTitle title="At-Risk / Recover" subtitle="ต้องดูแลทันที" />
             <div className="space-y-2.5">
-              {recoverEvents.map((e) => {
-                const acc = accountById.get(e.accountId)!;
-                return (
-                  <Card key={e.id} className="border-red-200 bg-red-50/40 p-4">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-bold text-slate-900">⚠ {acc.name}</p>
-                      <StatusBadge status={e.status} />
-                    </div>
-                    <p className="mt-1 text-xs text-red-700">{e.triggerDetail}</p>
-                    <p className="mt-2 text-[11px] text-slate-600">→ {e.recommendedAction}</p>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      หยุด Marketing Automation แล้ว · Next: {e.nextExpectedMoment}
-                    </p>
-                  </Card>
-                );
-              })}
-              {atRisk
-                .filter((a) => !recoverEvents.some((e) => e.accountId === a.id))
+              {view.recover.map(({ event: e, account: acc }) => (
+                <Card key={e.id} className="border-red-200 bg-red-50/40 p-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-bold text-slate-900">⚠ {acc.name}</p>
+                    <StatusBadge status={e.status} />
+                  </div>
+                  <p className="mt-1 text-xs text-red-700">{e.triggerDetail}</p>
+                  <p className="mt-2 text-[11px] text-slate-600">→ {e.recommendedAction}</p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    หยุด Marketing Automation แล้ว · Next: {e.nextExpectedMoment}
+                  </p>
+                </Card>
+              ))}
+              {view.atRisk
+                .filter((a) => !view.recover.some((r) => r.account.id === a.id))
                 .map((a) => (
                   <Card key={a.id} className="border-orange-200 bg-orange-50/40 p-4">
                     <p className="text-sm font-bold text-slate-900">{a.name}</p>
@@ -115,51 +102,41 @@ export default function CustomerSuccess() {
           <div>
             <SectionTitle title="Win-back Queue (EBM Return)" />
             <div className="space-y-2.5">
-              {returnEvents.map((e) => {
-                const acc = accountById.get(e.accountId)!;
-                return (
-                  <Card key={e.id} className="p-4">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-bold text-slate-900">{acc.name}</p>
-                      <MomentChip code="EBM Return" small />
-                    </div>
-                    <p className="mt-1 text-xs text-slate-500">{e.triggerDetail}</p>
-                    <p className="mt-1.5 text-[11px] text-indigo-700">→ {e.recommendedAction}</p>
-                  </Card>
-                );
-              })}
+              {view.winback.map(({ event: e, account: acc }) => (
+                <Card key={e.id} className="p-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-bold text-slate-900">{acc.name}</p>
+                    <MomentChip code="EBM Return" small />
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">{e.triggerDetail}</p>
+                  <p className="mt-1.5 text-[11px] text-indigo-700">→ {e.recommendedAction}</p>
+                </Card>
+              ))}
             </div>
           </div>
 
           <div>
             <SectionTitle title="Renewal / Repeat กำลังจะถึง" />
             <Card className="divide-y divide-slate-50">
-              {MOMENT_EVENTS.filter(
-                (e) =>
-                  ["EBM Repeat", "EBM Season"].includes(e.momentType) &&
-                  !["Won", "Lost", "Delivery"].includes(e.status),
-              ).map((e) => {
-                const acc = accountById.get(e.accountId)!;
-                return (
-                  <div key={e.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-slate-800">{acc.name}</p>
-                      <p className="truncate text-[11px] text-slate-500">{e.subMoment}</p>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-[11px] font-semibold text-slate-600">
-                        {shortDate(e.expectedEventDate)}
-                      </p>
-                      <Link
-                        href={`/workspace?event=${e.id}`}
-                        className="text-[11px] font-medium text-indigo-600 hover:underline"
-                      >
-                        เปิด Workspace →
-                      </Link>
-                    </div>
+              {view.renewals.map(({ event: e, account: acc }) => (
+                <div key={e.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-800">{acc.name}</p>
+                    <p className="truncate text-[11px] text-slate-500">{e.subMoment}</p>
                   </div>
-                );
-              })}
+                  <div className="shrink-0 text-right">
+                    <p className="text-[11px] font-semibold text-slate-600">
+                      {shortDate(e.expectedEventDate)}
+                    </p>
+                    <Link
+                      href={`/workspace?account=${acc.id}&event=${e.id}`}
+                      className="text-[11px] font-medium text-indigo-600 hover:underline"
+                    >
+                      เปิด Workspace →
+                    </Link>
+                  </div>
+                </div>
+              ))}
             </Card>
           </div>
         </div>

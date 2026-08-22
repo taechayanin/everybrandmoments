@@ -6,53 +6,99 @@
 
 > รู้ว่า Business Moment อะไรกำลังเกิดขึ้น → รู้ว่าใครได้รับผลกระทบ → รู้ว่าควรเสนอ Solution อะไร → รู้ว่าควร Follow-up เมื่อไร → และรู้ว่า Moment ถัดไปคืออะไร
 
-สร้างตาม PRD `MOMENT_OS_SYSTEM_FULL_PRD.md` (v1.0, สิงหาคม 2026)
+สร้างตาม PRD `MOMENT_OS_SYSTEM_FULL_PRD.md` (v1.0) + Refactor ตาม `MOMENT_OS_CLOUDFLARE_REFACTOR_PLAN.md`
 
-## สถานะ: MVP Phase 1 (Mock Data)
+## สถานะ: Phase 2 Architecture บน Cloudflare (Mock Adapter เป็น default)
 
-ทำงานด้วย local mock data ทั้งหมด — ไม่ต้องมี backend / database
-("วันนี้" ของระบบตรึงไว้ที่ 22 ส.ค. 2026 เพื่อให้เดโมคงที่ ดู `lib/format.ts` → `TODAY`)
+```text
+UI (Next.js 16 App Router)
+  ↓
+Application Use Cases   lib/application/
+  ↓
+Domain Rules            lib/domain/       (MomentCode, typed IDs, Score, OpportunityStage)
+  ↓
+Repository Interfaces   lib/repositories/
+  ↓
+Adapters                lib/infrastructure/
+                          ├── mock/           ← default (in-memory, demo data)
+                          └── cloudflare/d1/  ← MOMENT_OS_DATA_SOURCE=d1
+```
 
-### โมดูลทั้ง 13
+- ทุก write ผ่าน Server Action + zod validation (`lib/validation/`)
+- Workspace ใช้ state machine ตัวเดียว (`app/workspace/use-workspace-machine.ts`) — เปลี่ยน upstream step จะ reset downstream อัตโนมัติ
+- Radar filter ทำงาน server-side ผ่าน URL params + pagination ใน repository
+- Clock abstraction (`lib/services/clock.ts`) — mock mode ตรึงวันที่ 22 ส.ค. 2026 เพื่อเดโมคงที่
 
-| # | โมดูล | Route | สถานะ |
-|---|---|---|---|
-| 01 | Command Center | `/` | ✅ KPI cards + Priority Feed + นัดหมาย |
-| 02 | Moment Radar | `/radar` | ✅ Signal filters + Add Moment (Manual Level 1) |
-| 03 | Journey Map | `/journey` | ✅ Master / Account / Revenue modes, 7 Phases × 4 Swimlanes |
-| 04 | Business Accounts | `/accounts`, `/accounts/[id]` | ✅ Account 360: timeline, whitespace map, purchase history |
-| 05 | Customer Solution Workspace | `/workspace` | ✅ 3 คอลัมน์ + workflow 6 ขั้น (Discovery → Opportunity) |
-| 06 | Opportunity Queue | `/opportunities` | ✅ Pipeline strip + ตารางเต็ม + SLA |
-| 07 | Solution Library | `/solutions` | ✅ 26 Solutions ผูก Moment/Stakeholder + Packages |
-| 08 | Offline Center | `/offline` | ✅ Routing logic, bookings, center dashboard, expansion intel |
-| 09 | Customer Success | `/success` | ✅ Next Moment engine, Recover, Win-back |
-| 10 | Campaign & Automation | `/automation` | ✅ 6 automations + rule engine + notifications |
-| 11 | Analytics | `/analytics` | ✅ Funnel, Revenue by Moment, Moment Economics, North Star |
-| 12 | Team Performance | `/performance` | ✅ KPI 4 ทีม + leaderboard |
-| 13 | Admin / Moment Library | `/admin` | ✅ 20 Master Moments, Score Formula, Roles |
-
-### Data Layer (`lib/`)
-
-- `types.ts` — โครงสร้างข้อมูลทั้งหมด (MomentEvent ตาม PRD §8, Solution ตาม §28)
-- `data/moments.ts` — 20 Master Moments + Discovery Questions + Next Moment mapping
-- `data/accounts.ts` — 20 mock business accounts
-- `data/events.ts` — 50 moment events (score breakdown /100 ตามสูตร §13)
-- `data/solutions.ts` — Solution Library + Packages
-- `data/opportunities.ts` — Opportunities, Appointments, Centers
-- `format.ts` — Score → Priority (HOT/WARM/NURTURE/WATCH), SLA, ฿ formatting
-
-## รัน
+## รัน (Local Dev — Node runtime)
 
 ```bash
 npm install
 npm run dev
 ```
 
-เปิด http://localhost:3000
+## รันบน Cloudflare workerd (จำเป็นก่อน merge/deploy)
 
-## Phase ถัดไป (ตาม PRD)
+```bash
+npm run preview
+```
 
-- **Phase 2:** CRM/ERP Sync, Rule-based Trigger จริง, Offline Booking จริง, AI Sales Brief
-- **Phase 3:** External Signal Detection, Predictive Next Moment, Customer Portal
+Production รันใน `workerd` ไม่ใช่ Node — โค้ดที่ผ่าน `next dev` อาจพังบน Workers, `preview` คือตัวตรวจจริง
 
-Stack: Next.js 16 (App Router, Turbopack) · TypeScript · Tailwind CSS 4 · lucide-react
+## Deploy ขึ้น Cloudflare Workers
+
+```bash
+npm run deploy
+```
+
+### เปิดใช้ D1 (ครั้งแรก)
+
+```bash
+npx wrangler d1 create moment-os          # เอา database_id ไปใส่ wrangler.jsonc
+npx wrangler d1 migrations apply moment-os --remote
+npm run generate-seed                     # สร้าง seed/seed.sql จาก mock data
+npx wrangler d1 execute moment-os --file=seed/seed.sql --remote
+```
+
+แล้วตั้ง env `MOMENT_OS_DATA_SOURCE=d1` — UI ไม่ต้องแก้อะไร (สลับ adapter ที่ `lib/infrastructure/index.ts`)
+
+## ตรวจสอบก่อน merge
+
+```bash
+npm run lint
+npm run typecheck
+npm run test        # vitest: score formula + data integrity + createOpportunity
+npm run preview
+```
+
+## โมดูลทั้ง 13
+
+| # | โมดูล | Route |
+|---|---|---|
+| 01 | Command Center | `/` |
+| 02 | Moment Radar (server-side filters + Add Moment ผ่าน Server Action) | `/radar` |
+| 03 | Journey Map (Master / Account / Revenue) | `/journey` |
+| 04 | Business Accounts + Account 360 (dynamic, ไม่มี generateStaticParams) | `/accounts`, `/accounts/[id]` |
+| 05 | Customer Solution Workspace (state machine 6 ขั้น + Server Action) | `/workspace` |
+| 06 | Opportunity Queue (OpportunityStage แยกจาก Moment Status) | `/opportunities` |
+| 07 | Solution Library (cross-sell เป็น ID-based relations) | `/solutions` |
+| 08 | Offline Center | `/offline` |
+| 09 | Customer Success | `/success` |
+| 10 | Campaign & Automation | `/automation` |
+| 11 | Analytics | `/analytics` |
+| 12 | Team Performance | `/performance` |
+| 13 | Admin / Moment Library | `/admin` |
+
+## โครงสร้าง Cloudflare
+
+- `wrangler.jsonc` — bindings: `DB` (D1), `FILES` (R2), `MOMENT_JOBS` (Queues), observability เปิดแล้ว
+- `migrations/` — normalized schema 25+ ตาราง (organizations, accounts, contacts, moment_events, moment_signals, solutions, solution_relations, opportunities, audit_logs, …) + indexes
+- `open-next.config.ts` — OpenNext Cloudflare adapter
+- `npm run cf-typegen` — สร้าง `cloudflare-env.d.ts` จาก wrangler.jsonc
+
+## Phase ถัดไป (ตามแผน §53–60)
+
+- Sprint 5: Queues (AI / CRM / ERP jobs) — producer binding มีแล้ว
+- Sprint 6: moment_signals + AI Detection + evidence UI (ตารางพร้อมแล้ว)
+- Sprint 7: Auth + RBAC + organization scope (ทุก query scoped organization_id แล้ว)
+
+Stack: Next.js 16 (App Router, Turbopack) · TypeScript · Tailwind 4 · zod · Vitest · @opennextjs/cloudflare · Wrangler · D1/R2/Queues

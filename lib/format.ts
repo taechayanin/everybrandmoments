@@ -1,15 +1,7 @@
-import type { Priority, ScoreBreakdown } from "@/lib/types";
+import type { Priority } from "@/lib/types";
 
-export function totalScore(s: ScoreBreakdown): number {
-  return s.businessFit + s.intent + s.timing + s.wallet + s.relationship;
-}
-
-export function priorityOf(score: number): Priority {
-  if (score >= 85) return "HOT";
-  if (score >= 70) return "WARM";
-  if (score >= 50) return "NURTURE";
-  return "WATCH";
-}
+// Scoring rules live in the domain layer; re-exported here for UI convenience.
+export { priorityOf, totalScore } from "@/lib/domain/score";
 
 export const PRIORITY_STYLE: Record<
   Priority,
@@ -65,11 +57,13 @@ export function monthYear(iso: string): string {
   return `${TH_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-// "Today" is fixed for the mock dataset so the demo is deterministic.
-export const TODAY = "2026-08-22";
+import { getClock } from "@/lib/services/clock";
+
+/** Today's date (ISO) from the Clock service — fixed in mock mode. */
+export const TODAY = getClock().now().toISOString().slice(0, 10);
 
 export function daysUntil(iso: string): number {
-  const a = new Date(TODAY).getTime();
+  const a = getClock().now().getTime();
   const b = new Date(iso).getTime();
   return Math.round((b - a) / 86_400_000);
 }

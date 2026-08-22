@@ -1,7 +1,8 @@
 import { Card, MomentChip, PageHeader, SectionTitle, StatCard } from "@/components/ui";
-import { ACCOUNTS } from "@/lib/data/accounts";
-import { MOMENT_EVENTS } from "@/lib/data/events";
-import { baht, pct, totalScore } from "@/lib/format";
+import { getAnalyticsView } from "@/lib/application/analytics/get-analytics-view";
+import { baht, pct } from "@/lib/format";
+
+export const dynamic = "force-dynamic";
 
 const FUNNEL = [
   { label: "Prospects", value: 30000 },
@@ -27,13 +28,8 @@ const MOMENT_ECONOMICS = [
   { moment: "EBM Engage", revenue: 320000, gp: 0.39, attach: 0.6, repeat: 0.6 },
 ];
 
-export default function Analytics() {
-  const activeAccounts = ACCOUNTS.filter((a) => a.customerSince).length;
-  const totalLtv = ACCOUNTS.reduce((s, a) => s + a.ltv, 0);
-  const totalGp = ACCOUNTS.reduce((s, a) => s + a.grossProfit, 0);
-  const detected = MOMENT_EVENTS.length;
-  const won = MOMENT_EVENTS.filter((e) => e.status === "Won").length;
-  const hot = MOMENT_EVENTS.filter((e) => totalScore(e.score) >= 85).length;
+export default async function Analytics() {
+  const view = await getAnalyticsView();
   const maxRevenue = Math.max(...MOMENT_ECONOMICS.map((m) => m.revenue));
 
   return (
@@ -41,12 +37,16 @@ export default function Analytics() {
       <PageHeader title="Analytics" subtitle="Executive Dashboard — Account / Moment / Revenue / Solution / Offline" />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        <StatCard label="Active Business Accounts" value={activeAccounts} hint="มี Transaction ใน 12 เดือน" />
-        <StatCard label="Moments Detected" value={detected} hint="ทั้งหมดในระบบ" />
-        <StatCard label="HOT Moments" value={hot} accent="text-red-600" />
-        <StatCard label="Moment → Won" value={won} accent="text-emerald-600" />
-        <StatCard label="Total LTV" value={baht(totalLtv)} accent="text-indigo-600" />
-        <StatCard label="Total GP" value={baht(totalGp)} hint={`≈ ${pct(totalGp / Math.max(totalLtv, 1))} ของ LTV`} />
+        <StatCard label="Active Business Accounts" value={view.activeAccounts} hint="มี Transaction ใน 12 เดือน" />
+        <StatCard label="Moments Detected" value={view.momentsDetected} hint="ทั้งหมดในระบบ" />
+        <StatCard label="HOT Moments" value={view.hotMoments} accent="text-red-600" />
+        <StatCard label="Moment → Won" value={view.momentsWon} accent="text-emerald-600" />
+        <StatCard label="Total LTV" value={baht(view.totalLtv)} accent="text-indigo-600" />
+        <StatCard
+          label="Total GP"
+          value={baht(view.totalGp)}
+          hint={`≈ ${pct(view.totalGp / Math.max(view.totalLtv, 1))} ของ LTV`}
+        />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-2">
@@ -142,10 +142,10 @@ export default function Analytics() {
       <div className="mt-6">
         <SectionTitle title="North Star Metrics" />
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-          <StatCard label="#1 Active Accounts" value={activeAccounts} />
+          <StatCard label="#1 Active Accounts" value={view.activeAccounts} />
           <StatCard label="#2 Moments / Account / ปี" value="2.5" hint="เป้า: เพิ่มขึ้นทุกไตรมาส" />
-          <StatCard label="#3 Revenue / Account" value={baht(Math.round(totalLtv / Math.max(activeAccounts, 1)))} />
-          <StatCard label="#4 GP / Account" value={baht(Math.round(totalGp / Math.max(activeAccounts, 1)))} />
+          <StatCard label="#3 Revenue / Account" value={baht(Math.round(view.totalLtv / Math.max(view.activeAccounts, 1)))} />
+          <StatCard label="#4 GP / Account" value={baht(Math.round(view.totalGp / Math.max(view.activeAccounts, 1)))} />
           <StatCard label="#5 Production Attach" value="74%" />
           <StatCard label="#6 Repeat / Renewal" value="68%" />
         </div>

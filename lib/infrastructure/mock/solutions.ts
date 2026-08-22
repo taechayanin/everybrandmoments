@@ -14,7 +14,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 14,
     productionRequired: false,
     recommendedOffline: false,
-    crossSell: ["Business Card & Stationery", "Website Landing Page"],
+    crossSellSolutionIds: ["SOL-START-002"],
     nextMoment: "EBM Build",
   },
   {
@@ -29,7 +29,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 7,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Brand Starter Kit"],
+    crossSellSolutionIds: ["SOL-START-001"],
     nextMoment: "EBM Build",
   },
   // ---- EBM Build ----
@@ -45,7 +45,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 30,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Uniform Program", "Packaging System"],
+    crossSellSolutionIds: ["SOL-HIRE-001", "SOL-BUILD-002"],
     nextMoment: "EBM Launch",
   },
   {
@@ -60,7 +60,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 25,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Store Signage & Interior Branding"],
+    crossSellSolutionIds: ["SOL-BUILD-001"],
     nextMoment: "EBM Launch",
   },
   // ---- EBM Hire ----
@@ -76,7 +76,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 21,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Employee Welcome Kit", "ID Accessories"],
+    crossSellSolutionIds: ["SOL-WELCOME-001"],
     nextMoment: "EBM Welcome",
   },
   {
@@ -91,7 +91,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 10,
     productionRequired: false,
     recommendedOffline: false,
-    crossSell: ["Uniform Program"],
+    crossSellSolutionIds: ["SOL-HIRE-001"],
     nextMoment: "EBM Welcome",
   },
   // ---- EBM Welcome ----
@@ -107,7 +107,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 21,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Uniform Program", "ID Accessories", "Employee Merchandise"],
+    crossSellSolutionIds: ["SOL-HIRE-001", "SOL-ENGAGE-001"],
     nextMoment: "EBM Milestone",
     packages: [
       { name: "Welcome Lite", startingPrice: 590, items: ["Notebook", "ปากกา", "สายคล้องบัตร"] },
@@ -127,7 +127,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 18,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["VIP Onboarding Kit"],
+    crossSellSolutionIds: ["SOL-THANKS-001"],
     nextMoment: "EBM Engage",
   },
   {
@@ -142,7 +142,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 21,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Partnership Merchandise"],
+    crossSellSolutionIds: ["SOL-ENGAGE-001"],
     nextMoment: "EBM Engage",
   },
   // ---- EBM Launch ----
@@ -158,7 +158,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 21,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Opening Gift", "Signage & POSM"],
+    crossSellSolutionIds: ["SOL-LAUNCH-002", "SOL-BUILD-001"],
     nextMoment: "EBM Thanks",
     packages: [
       { name: "Launch Lite", startingPrice: 29000, items: ["Basic Branding", "Social Template", "Opening Artwork"] },
@@ -178,7 +178,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 14,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Grand Opening Kit"],
+    crossSellSolutionIds: ["SOL-LAUNCH-001"],
     nextMoment: "EBM Thanks",
   },
   // ---- EBM Sell ----
@@ -194,7 +194,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 10,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Brand Starter Kit"],
+    crossSellSolutionIds: ["SOL-START-001"],
     nextMoment: "EBM Deliver",
   },
   // ---- EBM Deliver ----
@@ -210,7 +210,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 20,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Thank You Card Set"],
+    crossSellSolutionIds: ["SOL-THANKS-001"],
     nextMoment: "EBM Thanks",
   },
   // ---- EBM Thanks ----
@@ -226,7 +226,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 14,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Seasonal Gift Set"],
+    crossSellSolutionIds: ["SOL-SEASON-001"],
     nextMoment: "EBM Repeat",
   },
   // ---- EBM Repeat ----
@@ -242,7 +242,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 18,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Corporate Thank You Gift"],
+    crossSellSolutionIds: ["SOL-THANKS-001"],
     nextMoment: "EBM Milestone",
   },
   // ---- EBM Engage ----
@@ -258,7 +258,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 18,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Townhall Kit"],
+    crossSellSolutionIds: ["SOL-ENGAGE-002"],
     nextMoment: "EBM Milestone",
   },
   {
@@ -273,7 +273,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 21,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Employee Engagement Merchandise"],
+    crossSellSolutionIds: ["SOL-ENGAGE-001"],
     nextMoment: "EBM Celebrate",
   },
   // ---- EBM Grow ----
@@ -289,7 +289,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 30,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Uniform Program", "Store Signage & Interior Branding"],
+    crossSellSolutionIds: ["SOL-HIRE-001", "SOL-BUILD-001"],
     nextMoment: "EBM Expand",
   },
   // ---- EBM Milestone ----
@@ -305,7 +305,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 30,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Corporate Thank You Gift", "Townhall / Team Event Kit"],
+    crossSellSolutionIds: ["SOL-THANKS-001", "SOL-ENGAGE-002"],
     nextMoment: "EBM Celebrate",
   },
   {
@@ -320,7 +320,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 21,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Anniversary Celebration Set"],
+    crossSellSolutionIds: ["SOL-MILESTONE-001"],
     nextMoment: "EBM Engage",
   },
   // ---- EBM Celebrate ----
@@ -336,7 +336,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 14,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Long Service Award Kit"],
+    crossSellSolutionIds: ["SOL-MILESTONE-002"],
     nextMoment: "EBM Engage",
   },
   // ---- EBM Season ----
@@ -352,7 +352,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 30,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Corporate Thank You Gift"],
+    crossSellSolutionIds: ["SOL-THANKS-001"],
     nextMoment: "EBM Thanks",
     packages: [
       { name: "Season Essential", startingPrice: 390, items: ["กล่องของขวัญ", "การ์ดอวยพร"] },
@@ -373,7 +373,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 45,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Uniform Program", "Employee Welcome Kit", "Grand Opening Kit"],
+    crossSellSolutionIds: ["SOL-HIRE-001", "SOL-WELCOME-001", "SOL-LAUNCH-001"],
     nextMoment: "EBM Launch",
     packages: [
       { name: "Branch Lite", startingPrice: 80000, items: ["Signage หลัก", "POSM ชุดเริ่มต้น", "Uniform 10 ชุด"] },
@@ -394,7 +394,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 45,
     productionRequired: true,
     recommendedOffline: true,
-    crossSell: ["Store Signage & Interior Branding", "Uniform Program"],
+    crossSellSolutionIds: ["SOL-BUILD-001", "SOL-HIRE-001"],
     nextMoment: "EBM Launch",
   },
   // ---- EBM Recover ----
@@ -410,7 +410,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 7,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Corporate Thank You Gift"],
+    crossSellSolutionIds: ["SOL-THANKS-001"],
     nextMoment: "EBM Thanks",
   },
   // ---- EBM Return ----
@@ -426,7 +426,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 14,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Reorder Program + Refresh Design"],
+    crossSellSolutionIds: ["SOL-REPEAT-001"],
     nextMoment: "EBM Repeat",
   },
   // ---- EBM Farewell ----
@@ -442,7 +442,7 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 14,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: ["Award & Trophy Collection"],
+    crossSellSolutionIds: ["SOL-CELEBRATE-001"],
     nextMoment: "EBM Engage",
   },
   // ---- EBM Close ----
@@ -458,12 +458,16 @@ export const SOLUTIONS: Solution[] = [
     leadTimeDays: 30,
     productionRequired: true,
     recommendedOffline: false,
-    crossSell: [],
+    crossSellSolutionIds: [],
     nextMoment: "EBM Start",
   },
 ];
 
-export const solutionById = new Map(SOLUTIONS.map((s) => [s.id, s]));
+export const solutionById = new Map<string, Solution>(SOLUTIONS.map((s) => [s.id, s]));
+
+export function solutionName(id: string): string {
+  return solutionById.get(id)?.name ?? id;
+}
 
 export function solutionsForMoment(momentCode: string): Solution[] {
   return SOLUTIONS.filter((s) => s.moment === momentCode);

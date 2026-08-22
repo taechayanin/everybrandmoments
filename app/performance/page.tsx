@@ -1,6 +1,9 @@
 import { Avatar, Card, PageHeader, SectionTitle } from "@/components/ui";
-import { USERS } from "@/lib/data/users";
+import { getTeamMembers } from "@/lib/application/team/get-team-view";
 import { baht, pct } from "@/lib/format";
+import type { UserId } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
 
 const TEAM_KPI = [
   {
@@ -41,7 +44,13 @@ const TEAM_KPI = [
   },
 ];
 
-const LEADERBOARD = [
+const LEADERBOARD: {
+  userId: UserId;
+  won: number;
+  revenue: number;
+  gp: number;
+  attach: number;
+}[] = [
   { userId: "USR-010", won: 8, revenue: 1480000, gp: 0.39, attach: 0.82 },
   { userId: "USR-011", won: 7, revenue: 1260000, gp: 0.41, attach: 0.76 },
   { userId: "USR-012", won: 6, revenue: 940000, gp: 0.4, attach: 0.71 },
@@ -49,8 +58,10 @@ const LEADERBOARD = [
   { userId: "USR-003", won: 3, revenue: 290000, gp: 0.38, attach: 0.55 },
 ];
 
-export default function TeamPerformance() {
-  const userMap = new Map(USERS.map((u) => [u.id, u]));
+export default async function TeamPerformance() {
+  const users = await getTeamMembers();
+  const userMap = new Map(users.map((u) => [u.id, u]));
+
   return (
     <div>
       <PageHeader title="Team Performance" subtitle="KPI แยกตามทีม — Growth / SDR / Customer Solution / Customer Success" />
@@ -87,7 +98,8 @@ export default function TeamPerformance() {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {LEADERBOARD.map((row, i) => {
-                const u = userMap.get(row.userId)!;
+                const u = userMap.get(row.userId);
+                if (!u) return null;
                 return (
                   <tr key={row.userId} className="hover:bg-slate-50/60">
                     <td className="px-4 py-3 text-xs font-bold text-slate-400">{i + 1}</td>

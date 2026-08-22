@@ -455,4 +455,4 @@ export const ACCOUNTS: Account[] = [
   },
 ];
 
-export const accountById = new Map(ACCOUNTS.map((a) => [a.id, a]));
+export const accountById = new Map<string, Account>(ACCOUNTS.map((a) => [a.id, a]));

@@ -1,15 +1,20 @@
 import type {
+  AccountId,
   Channel,
+  MomentCode,
   MomentEvent,
+  MomentEventId,
   MomentEventStatus,
+  SolutionId,
   Stakeholder,
   TriggerSource,
+  UserId,
 } from "@/lib/types";
 
 let seq = 0;
 function ev(
-  accountId: string,
-  momentType: string,
+  accountId: AccountId,
+  momentType: MomentCode,
   subMoment: string,
   stakeholders: Stakeholder[],
   triggerSource: TriggerSource,
@@ -19,16 +24,16 @@ function ev(
   s: [number, number, number, number, number], // fit/30 intent/25 timing/20 wallet/15 rel/10
   potentialWalletMin: number,
   potentialWalletMax: number,
-  recommendedSolutionIds: string[],
+  recommendedSolutionIds: SolutionId[],
   recommendedAction: string,
-  ownerId: string,
+  ownerId: UserId,
   status: MomentEventStatus,
-  nextExpectedMoment: string,
+  nextExpectedMoment: MomentCode,
   channel?: Channel,
 ): MomentEvent {
   seq += 1;
   return {
-    id: `ME-2026-${String(seq).padStart(6, "0")}`,
+    id: `ME-2026-${String(seq).padStart(6, "0")}` as MomentEventId,
     accountId,
     momentType,
     subMoment,
@@ -473,9 +478,9 @@ export const MOMENT_EVENTS: MomentEvent[] = [
   ),
 ];
 
-export const eventById = new Map(MOMENT_EVENTS.map((e) => [e.id, e]));
+export const eventById = new Map<string, MomentEvent>(MOMENT_EVENTS.map((e) => [e.id, e]));
 
-export function eventsByAccount(accountId: string): MomentEvent[] {
+export function eventsByAccount(accountId: AccountId): MomentEvent[] {
   return MOMENT_EVENTS.filter((e) => e.accountId === accountId).sort((a, b) =>
     a.detectedAt.localeCompare(b.detectedAt),
   );

@@ -9,63 +9,33 @@ import {
   SectionTitle,
   StatusBadge,
 } from "@/components/ui";
-import { ACCOUNTS, accountById } from "@/lib/data/accounts";
-import { eventsByAccount } from "@/lib/data/events";
-import { momentByCode } from "@/lib/data/moments";
-import { SOLUTIONS } from "@/lib/data/solutions";
-import { userName } from "@/lib/data/users";
+import { getAccount360 } from "@/lib/application/accounts/get-account-360";
+import { isAccountId } from "@/lib/domain/ids";
+import { totalScore } from "@/lib/domain/score";
+import { WHITESPACE_CATEGORIES } from "@/lib/domain/account";
 import {
   baht,
   bahtFull,
   monthYear,
-  priorityOf,
   shortDate,
-  totalScore,
   walletRange,
 } from "@/lib/format";
-import type { WhitespaceCategory } from "@/lib/types";
+import { momentColor } from "@/lib/domain/master-moments";
 
-export function generateStaticParams() {
-  return ACCOUNTS.map((a) => ({ id: a.id }));
-}
-
-const ACTIVE = new Set([
-  "Detected", "Review", "Contacted", "Qualified", "Meeting Booked",
-  "Discovery Completed", "Solution Design", "Proposal", "Negotiation",
-]);
-
-// Map whitespace gaps → solutions we can suggest
-const GAP_SOLUTIONS: Partial<Record<WhitespaceCategory, string>> = {
-  Uniform: "Uniform Program",
-  "Employee Kit": "Employee Welcome Kit",
-  Signage: "Store Signage & Interior Branding",
-  Packaging: "Packaging System Design & Production",
-  Website: "Brand Starter Kit",
-  "Campaign Materials": "Sales Kit & Presentation Material",
-  "Corporate Gift": "Corporate Thank You Gift",
-  Merchandise: "Employee Engagement Merchandise",
-  "Brand Identity": "Brand Starter Kit",
-};
+// Dynamic server-rendered page — no generateStaticParams. Account data will
+// come from D1 and must not be baked in at build time (refactor plan §31).
+export const dynamic = "force-dynamic";
 
 export default async function Account360({
   params,
 }: PageProps<"/accounts/[id]">) {
   const { id } = await params;
-  const acc = accountById.get(id);
-  if (!acc) notFound();
+  if (!isAccountId(id)) notFound();
 
-  const events = eventsByAccount(acc.id);
-  const activeEvents = events
-    .filter((e) => ACTIVE.has(e.status))
-    .sort((a, b) => totalScore(b.score) - totalScore(a.score));
-  const current = activeEvents[0];
-  const gaps = (Object.entries(acc.whitespace) as [WhitespaceCategory, boolean][]).filter(
-    ([, bought]) => !bought,
-  );
-  const suggested = gaps
-    .map(([g]) => SOLUTIONS.find((s) => s.name === GAP_SOLUTIONS[g]))
-    .filter((s, i, arr) => s && arr.indexOf(s) === i)
-    .slice(0, 3);
+  const view = await getAccount360(id);
+  if (!view) notFound();
+
+  const { account: acc, activeMoments, timeline, recommendedSolutions, ownerName } = view;
 
   return (
     <div>
@@ -88,7 +58,7 @@ export default async function Account360({
                   {acc.tier} Account
                 </span>
                 <span className="rounded-md bg-slate-100 px-2 py-0.5 font-medium text-slate-600">
-                  Owner: {userName(acc.ownerId)}
+                  Owner: {ownerName}
                 </span>
                 <span className="rounded-md bg-slate-100 px-2 py-0.5 font-medium text-slate-600">
                   {acc.customerSince ? `ลูกค้าตั้งแต่ ${monthYear(acc.customerSince)}` : "🆕 Prospect"}
@@ -100,8 +70,14 @@ export default async function Account360({
             <HeaderStat label="LTV" value={acc.ltv ? baht(acc.ltv) : "—"} />
             <HeaderStat label="Gross Profit" value={acc.grossProfit ? baht(acc.grossProfit) : "—"} />
             <HeaderStat label="Account Score" value={String(acc.accountScore)} accent />
-            <HeaderStat label="Current Moment" value={current ? current.momentType.replace("EBM ", "") : "—"} />
-            <HeaderStat label="Next Moment" value={current ? current.nextExpectedMoment.replace("EBM ", "") : "—"} />
+            <HeaderStat
+              label="Current Moment"
+              value={activeMoments[0] ? activeMoments[0].momentType.replace("EBM ", "") : "—"}
+            />
+            <HeaderStat
+              label="Next Moment"
+              value={activeMoments[0] ? activeMoments[0].nextExpectedMoment.replace("EBM ", "") : "—"}
+            />
           </div>
         </div>
         {acc.notes && (
@@ -116,11 +92,11 @@ export default async function Account360({
           {/* Active moments */}
           <div>
             <SectionTitle title="Active Moments" subtitle="Moment ที่กำลังทำงานอยู่" />
-            {activeEvents.length === 0 ? (
+            {activeMoments.length === 0 ? (
               <Card className="p-4 text-sm text-slate-400">ไม่มี Moment Active</Card>
             ) : (
               <div className="space-y-2.5">
-                {activeEvents.map((e) => (
+                {activeMoments.map((e) => (
                   <Card key={e.id} className="p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
@@ -143,7 +119,7 @@ export default async function Account360({
                     <div className="mt-2.5 flex items-center justify-between">
                       <p className="text-xs font-medium text-indigo-700">→ {e.recommendedAction}</p>
                       <Link
-                        href={`/workspace?event=${e.id}`}
+                        href={`/workspace?account=${acc.id}&event=${e.id}`}
                         className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-700"
                       >
                         <Sparkles size={11} /> เปิดใน Workspace
@@ -160,25 +136,22 @@ export default async function Account360({
             <SectionTitle title="Moment Timeline" subtitle="ประวัติ Business Moments ทั้งหมด" />
             <Card className="p-5">
               <div className="relative space-y-5 before:absolute before:inset-y-1 before:left-[7px] before:w-px before:bg-slate-200">
-                {events.map((e) => {
-                  const color = momentByCode.get(e.momentType)?.color ?? "#94a3b8";
-                  return (
-                    <div key={e.id} className="relative pl-7">
-                      <span
-                        className="absolute left-0 top-1 h-[15px] w-[15px] rounded-full border-2 border-white ring-1 ring-slate-200"
-                        style={{ backgroundColor: color }}
-                      />
-                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                        {monthYear(e.detectedAt)}
-                      </p>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-bold text-slate-800">{e.momentType}</span>
-                        <span className="text-xs text-slate-500">{e.subMoment}</span>
-                        <StatusBadge status={e.status} />
-                      </div>
+                {timeline.map((e) => (
+                  <div key={e.id} className="relative pl-7">
+                    <span
+                      className="absolute left-0 top-1 h-[15px] w-[15px] rounded-full border-2 border-white ring-1 ring-slate-200"
+                      style={{ backgroundColor: momentColor(e.momentType) }}
+                    />
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      {monthYear(e.detectedAt)}
+                    </p>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-bold text-slate-800">{e.momentType}</span>
+                      <span className="text-xs text-slate-500">{e.subMoment}</span>
+                      <StatusBadge status={e.status} />
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
             </Card>
           </div>
@@ -212,8 +185,9 @@ export default async function Account360({
             <SectionTitle title="Whitespace Map" subtitle="ซื้อแล้ว vs ยังไม่ได้ซื้อ" />
             <Card className="p-4">
               <div className="space-y-1.5">
-                {(Object.entries(acc.whitespace) as [WhitespaceCategory, boolean][]).map(
-                  ([cat, bought]) => (
+                {WHITESPACE_CATEGORIES.map((cat) => {
+                  const bought = acc.whitespace[cat];
+                  return (
                     <div
                       key={cat}
                       className={`flex items-center justify-between rounded-lg px-3 py-1.5 text-xs ${
@@ -227,17 +201,17 @@ export default async function Account360({
                         <X size={13} className="text-slate-300" />
                       )}
                     </div>
-                  ),
-                )}
+                  );
+                })}
               </div>
-              {suggested.length > 0 && (
+              {recommendedSolutions.length > 0 && (
                 <div className="mt-4 rounded-lg bg-indigo-50 p-3">
                   <p className="text-[11px] font-bold text-indigo-800">✨ Next Best Solutions</p>
                   <ul className="mt-1.5 space-y-1">
-                    {suggested.map((s) => (
-                      <li key={s!.id} className="flex items-center justify-between text-[11px] text-indigo-700">
-                        <span>{s!.name}</span>
-                        <span className="font-semibold">{baht(s!.averageWallet)}</span>
+                    {recommendedSolutions.map((s) => (
+                      <li key={s.id} className="flex items-center justify-between text-[11px] text-indigo-700">
+                        <span>{s.name}</span>
+                        <span className="font-semibold">{baht(s.averageWallet)}</span>
                       </li>
                     ))}
                   </ul>

@@ -13,7 +13,7 @@ export const USERS: User[] = [
   { id: "USR-031", name: "อนุชา มั่นคง", nickname: "โอ๊ต", role: "Customer Success" },
 ];
 
-export const userById = new Map(USERS.map((u) => [u.id, u]));
+export const userById = new Map<string, User>(USERS.map((u) => [u.id, u]));
 
 export function userName(id: string): string {
   const u = userById.get(id);

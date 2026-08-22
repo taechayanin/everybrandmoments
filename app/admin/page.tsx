@@ -1,6 +1,6 @@
 import { Card, MomentChip, PageHeader, SectionTitle } from "@/components/ui";
-import { LIFECYCLE_PHASES, MASTER_MOMENTS } from "@/lib/data/moments";
-import { SOLUTIONS } from "@/lib/data/solutions";
+import { LIFECYCLE_PHASES, MASTER_MOMENTS } from "@/lib/domain/master-moments";
+import { listSolutions } from "@/lib/application/solutions/list-solutions";
 
 const ROLES = [
   { role: "Growth", can: ["View Leads", "Add Signals", "Campaign", "Moment Detection"], cannot: ["Approve Pricing"] },
@@ -19,7 +19,10 @@ const SCORE_FORMULA = [
   { label: "Relationship", points: 10, detail: "Existing / Repeat / Strategic / Referral / New" },
 ];
 
-export default function Admin() {
+export const dynamic = "force-dynamic";
+
+export default async function Admin() {
+  const solutions = await listSolutions();
   return (
     <div>
       <PageHeader title="Admin / Moment Library" subtitle="มาตรฐานกลาง: 20 Master Moments · Score Formula · Roles & Permissions" />
@@ -38,7 +41,7 @@ export default function Admin() {
                   </p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     {moments.map((m) => {
-                      const solCount = SOLUTIONS.filter((s) => s.moment === m.code).length;
+                      const solCount = solutions.filter((s) => s.moment === m.code).length;
                       return (
                         <Card key={m.code} className="p-3.5" >
                           <div className="flex items-center justify-between gap-2">
