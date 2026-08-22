@@ -8,6 +8,7 @@ import type {
   MomentEvent,
   MomentEventId,
   MomentEventStatus,
+  MomentSignal,
   Opportunity,
   OpportunityId,
   Solution,
@@ -30,6 +31,7 @@ import type {
   OpportunityRepository,
   Paginated,
   Repositories,
+  SignalRepository,
   SolutionRepository,
   UserRepository,
 } from "@/lib/repositories";
@@ -114,6 +116,10 @@ function mapEvent(r: Row, stakeholders: Row[], solutions: Row[]): MomentEvent {
     status: r.status as MomentEventStatus,
     nextExpectedMoment: r.next_expected_moment as MomentCode,
     channel: (r.channel ?? undefined) as Channel | undefined,
+    detectionConfidence: r.detection_confidence ?? undefined,
+    detectedBy: r.detected_by ?? undefined,
+    verifiedBy: (r.verified_by ?? undefined) as UserId | undefined,
+    verifiedAt: r.verified_at ?? undefined,
   };
 }
 
@@ -389,6 +395,69 @@ class D1MomentRepository implements MomentRepository {
       .bind(status, new Date().toISOString(), ORG, id)
       .run();
   }
+
+  async verify(id: MomentEventId, verifiedBy: UserId): Promise<void> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `UPDATE moment_events
+         SET verified_by = ?, verified_at = ?, updated_at = ?,
+             status = CASE WHEN status = 'Detected' THEN 'Review' ELSE status END
+         WHERE organization_id = ? AND id = ?`,
+      )
+      .bind(verifiedBy, now, now, ORG, id)
+      .run();
+    await this.db
+      .prepare(
+        `INSERT INTO audit_logs (id, organization_id, user_id, entity_type, entity_id, action, after_json, created_at)
+         VALUES (?, ?, ?, 'moment_event', ?, 'verify', ?, ?)`,
+      )
+      .bind(
+        `AUD-${crypto.randomUUID()}`, ORG, verifiedBy, id,
+        JSON.stringify({ verified_by: verifiedBy, verified_at: now }), now,
+      )
+      .run();
+  }
+}
+
+class D1SignalRepository implements SignalRepository {
+  constructor(private db: D1Database) {}
+
+  private map(r: Row): MomentSignal {
+    return {
+      id: r.id,
+      accountId: r.account_id as AccountId,
+      momentEventId: (r.moment_event_id ?? null) as MomentEventId | null,
+      sourceType: r.source_type,
+      sourceRef: r.source_ref ?? undefined,
+      sourceUrl: r.source_url ?? undefined,
+      rawText: r.raw_text ?? "",
+      confidence: r.confidence ?? undefined,
+      detectedAt: r.detected_at,
+      modelName: r.model_name ?? undefined,
+      modelVersion: r.model_version ?? undefined,
+    };
+  }
+
+  async listByEvent(momentEventId: MomentEventId): Promise<MomentSignal[]> {
+    const res = await this.db
+      .prepare(
+        "SELECT * FROM moment_signals WHERE organization_id = ? AND moment_event_id = ? ORDER BY detected_at",
+      )
+      .bind(ORG, momentEventId)
+      .all<Row>();
+    return res.results.map((r) => this.map(r));
+  }
+
+  async listByAccount(accountId: AccountId): Promise<MomentSignal[]> {
+    const res = await this.db
+      .prepare(
+        "SELECT * FROM moment_signals WHERE organization_id = ? AND account_id = ? ORDER BY detected_at",
+      )
+      .bind(ORG, accountId)
+      .all<Row>();
+    return res.results.map((r) => this.map(r));
+  }
 }
 
 class D1MasterMomentRepository implements MasterMomentRepository {
@@ -596,5 +665,6 @@ export async function createD1Repositories(): Promise<Repositories> {
     opportunities: new D1OpportunityRepository(db),
     users: new D1UserRepository(db),
     appointments: new D1AppointmentRepository(db),
+    signals: new D1SignalRepository(db),
   };
 }

@@ -4,6 +4,10 @@ import { scanAnniversaries, scanInactiveAccounts } from "./rules";
 
 export interface JobsEnv {
   DB: D1Database;
+  /** Enables Level 3 AI detection when set (wrangler secret put ANTHROPIC_API_KEY). */
+  ANTHROPIC_API_KEY?: string;
+  /** Override the detection model (default claude-opus-5). */
+  AI_MODEL?: string;
 }
 
 // Cron slots (UTC) — see wrangler.jsonc triggers.
@@ -59,7 +63,7 @@ export default {
 async function handleJob(job: Job, env: JobsEnv): Promise<void> {
   switch (job.jobType) {
     case "DETECT_MOMENT":
-      await detectMomentFromSignals(env.DB, job);
+      await detectMomentFromSignals(env.DB, job, env);
       break;
     case "SCORE_MOMENT":
     case "RECOMMEND_SOLUTIONS":

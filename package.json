@@ -17,6 +17,7 @@
     "jobs:deploy": "wrangler deploy --config workers/jobs/wrangler.jsonc"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
     "@opennextjs/cloudflare": "^1.20.2",
     "lucide-react": "^1.33.0",
     "next": "16.3.2",

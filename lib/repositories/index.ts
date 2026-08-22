@@ -9,6 +9,7 @@ import type {
   MomentEvent,
   MomentEventId,
   MomentEventStatus,
+  MomentSignal,
   Opportunity,
   OpportunityId,
   OpportunityStage,
@@ -75,6 +76,15 @@ export interface MomentRepository {
   radar(query: MomentRadarQuery): Promise<Paginated<MomentEvent>>;
   create(input: CreateMomentInput): Promise<MomentEvent>;
   updateStatus(id: MomentEventId, status: MomentEventStatus): Promise<void>;
+  /** Human verification of a detected moment (refactor plan §41 / Sprint 6). */
+  verify(id: MomentEventId, verifiedBy: UserId): Promise<void>;
+}
+
+// ---------- Signals (detection evidence) ----------
+
+export interface SignalRepository {
+  listByEvent(momentEventId: MomentEventId): Promise<MomentSignal[]>;
+  listByAccount(accountId: AccountId): Promise<MomentSignal[]>;
 }
 
 export interface MasterMomentRepository {
@@ -131,4 +141,5 @@ export interface Repositories {
   opportunities: OpportunityRepository;
   users: UserRepository;
   appointments: AppointmentRepository;
+  signals: SignalRepository;
 }

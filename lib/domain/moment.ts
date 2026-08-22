@@ -115,6 +115,27 @@ export interface MomentEvent {
   status: MomentEventStatus;
   nextExpectedMoment: MomentCode;
   channel?: Channel;
+  // Detection provenance (refactor plan §41) — who/what detected this and
+  // whether a human has confirmed it. Manual moments carry none of these.
+  detectionConfidence?: number; // 0..1
+  detectedBy?: string; // e.g. "RULE-KEYWORD-L2@1.0.0", "claude-opus-5"
+  verifiedBy?: UserId;
+  verifiedAt?: string; // ISO datetime
+}
+
+/** A raw signal observed for an account — the evidence behind a detection. */
+export interface MomentSignal {
+  id: string; // SIG-...
+  accountId: AccountId;
+  momentEventId: MomentEventId | null;
+  sourceType: TriggerSource;
+  sourceRef?: string;
+  sourceUrl?: string;
+  rawText: string;
+  confidence?: number; // 0..1 — set once a detector processes the signal
+  detectedAt: string; // ISO datetime
+  modelName?: string;
+  modelVersion?: string;
 }
 
 /** Statuses that mean the moment is still being worked. */

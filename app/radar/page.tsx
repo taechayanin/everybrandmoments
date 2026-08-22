@@ -135,8 +135,12 @@ export default async function MomentRadar({
                   </Link>
                 </td>
                 <td className="px-4 py-3">
-                  <MomentChip code={e.momentType} small />
-                  <span className="mt-1 block text-[11px] text-slate-500">{e.subMoment}</span>
+                  <Link href={`/radar/${e.id}`} className="group block">
+                    <MomentChip code={e.momentType} small />
+                    <span className="mt-1 block text-[11px] text-slate-500 group-hover:text-indigo-600 group-hover:underline">
+                      {e.subMoment}
+                    </span>
+                  </Link>
                 </td>
                 <td className="max-w-[220px] px-4 py-3">
                   <span className="text-[11px] font-semibold text-slate-600">{e.triggerSource}</span>

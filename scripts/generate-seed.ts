@@ -8,6 +8,7 @@ import { MASTER_MOMENTS } from "../lib/domain/master-moments";
 import { ACCOUNTS } from "../lib/infrastructure/mock/accounts";
 import { MOMENT_EVENTS } from "../lib/infrastructure/mock/events";
 import { APPOINTMENTS, OPPORTUNITIES } from "../lib/infrastructure/mock/opportunities";
+import { MOCK_SIGNALS } from "../lib/infrastructure/mock/signals";
 import { SOLUTIONS } from "../lib/infrastructure/mock/solutions";
 import { USERS } from "../lib/infrastructure/mock/users";
 
@@ -127,6 +128,12 @@ for (const e of MOMENT_EVENTS) {
       `INSERT INTO moment_event_solutions (moment_event_id, solution_id) VALUES (${q(e.id)}, ${q(sid)});`,
     );
   }
+}
+
+for (const sig of MOCK_SIGNALS) {
+  lines.push(
+    `INSERT INTO moment_signals (id, organization_id, account_id, moment_event_id, source_type, source_ref, source_url, raw_text, confidence, detected_at, model_name, model_version) VALUES (${q(sig.id)}, ${q(ORG)}, ${q(sig.accountId)}, ${q(sig.momentEventId)}, ${q(sig.sourceType)}, ${q(sig.sourceRef ?? null)}, ${q(sig.sourceUrl ?? null)}, ${q(sig.rawText)}, ${sig.confidence ?? "NULL"}, ${q(sig.detectedAt)}, ${q(sig.modelName ?? null)}, ${q(sig.modelVersion ?? null)});`,
+  );
 }
 
 for (const o of OPPORTUNITIES) {

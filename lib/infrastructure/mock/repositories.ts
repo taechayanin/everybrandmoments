@@ -7,6 +7,7 @@ import type {
   MomentEvent,
   MomentEventId,
   MomentEventStatus,
+  MomentSignal,
   Opportunity,
   OpportunityId,
   Solution,
@@ -27,6 +28,7 @@ import type {
   OpportunityRepository,
   Paginated,
   Repositories,
+  SignalRepository,
   SolutionRepository,
   UserRepository,
 } from "@/lib/repositories";
@@ -34,6 +36,7 @@ import { MASTER_MOMENTS } from "@/lib/domain/master-moments";
 import { ACCOUNTS } from "./accounts";
 import { MOMENT_EVENTS } from "./events";
 import { APPOINTMENTS, OPPORTUNITIES } from "./opportunities";
+import { MOCK_SIGNALS } from "./signals";
 import { SOLUTIONS } from "./solutions";
 import { USERS } from "./users";
 
@@ -129,6 +132,25 @@ class MockMomentRepository implements MomentRepository {
     const e = events.find((x) => x.id === id);
     if (e) e.status = status;
   }
+
+  async verify(id: MomentEventId, verifiedBy: UserId): Promise<void> {
+    const e = events.find((x) => x.id === id);
+    if (e) {
+      e.verifiedBy = verifiedBy;
+      e.verifiedAt = new Date().toISOString();
+      if (e.status === "Detected") e.status = "Review";
+    }
+  }
+}
+
+class MockSignalRepository implements SignalRepository {
+  async listByEvent(momentEventId: MomentEventId): Promise<MomentSignal[]> {
+    return MOCK_SIGNALS.filter((s) => s.momentEventId === momentEventId);
+  }
+
+  async listByAccount(accountId: AccountId): Promise<MomentSignal[]> {
+    return MOCK_SIGNALS.filter((s) => s.accountId === accountId);
+  }
 }
 
 class MockMasterMomentRepository implements MasterMomentRepository {
@@ -197,5 +219,6 @@ export function createMockRepositories(): Repositories {
     opportunities: new MockOpportunityRepository(),
     users: new MockUserRepository(),
     appointments: new MockAppointmentRepository(),
+    signals: new MockSignalRepository(),
   };
 }

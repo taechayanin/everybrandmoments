@@ -1,4 +1,5 @@
 import type { MomentCode } from "../../../lib/domain/moment";
+import { detectWithClaude, type AiDetectorEnv } from "./ai-detection";
 import {
   DetectionResultSchema,
   type DetectMomentJob,
@@ -99,22 +100,34 @@ export function detect(rawTexts: string[]): DetectionResult {
 export async function detectMomentFromSignals(
   db: D1Database,
   job: DetectMomentJob,
+  env: AiDetectorEnv = {},
 ): Promise<void> {
   const signals = await db
     .prepare(
-      `SELECT id, raw_text FROM moment_signals
+      `SELECT id, source_type, raw_text FROM moment_signals
        WHERE organization_id = ? AND account_id = ?
          AND id IN (${job.signalIds.map(() => "?").join(", ")})`,
     )
     .bind(job.organizationId, job.accountId, ...job.signalIds)
-    .all<{ id: string; raw_text: string | null }>();
+    .all<{ id: string; source_type: string; raw_text: string | null }>();
 
   if (signals.results.length === 0) {
     console.log(JSON.stringify({ event: "detect_no_signals", accountId: job.accountId }));
     return;
   }
 
-  const result = detect(signals.results.map((s) => s.raw_text ?? ""));
+  // Level 3 (AI) when an API key is configured; Level 2 keyword rules
+  // otherwise or on any AI failure. Both honor the DetectionResult contract.
+  const aiResult = await detectWithClaude(
+    env,
+    signals.results.map((s) => ({
+      sourceType: s.source_type,
+      rawText: s.raw_text ?? "",
+    })),
+  );
+  const result = aiResult ?? detect(signals.results.map((s) => s.raw_text ?? ""));
+  const detectorName = aiResult ? aiResult.model : DETECTOR;
+  const detectorVersion = aiResult ? "structured-output" : DETECTOR_VERSION;
 
   // Dedup: one active moment per (account, moment code) — attach evidence to
   // the existing event instead of creating a duplicate.
@@ -153,7 +166,7 @@ export async function detectMomentFromSignals(
         Math.round(result.confidence * 20), // intent /25 scales with confidence
         RULES.find((r) => r.moment === result.momentCode)?.action ?? "Review Moment ใหม่",
         result.momentCode,
-        result.confidence, `${DETECTOR}@${DETECTOR_VERSION}`, now, now,
+        result.confidence, `${detectorName}@${detectorVersion}`, now, now,
       )
       .run();
   }
@@ -163,7 +176,7 @@ export async function detectMomentFromSignals(
       `UPDATE moment_signals SET moment_event_id = ?, confidence = ?, model_name = ?, model_version = ?
        WHERE id IN (${job.signalIds.map(() => "?").join(", ")})`,
     )
-    .bind(eventId, result.confidence, DETECTOR, DETECTOR_VERSION, ...job.signalIds)
+    .bind(eventId, result.confidence, detectorName, detectorVersion, ...job.signalIds)
     .run();
 
   console.log(
@@ -174,7 +187,7 @@ export async function detectMomentFromSignals(
       confidence: result.confidence,
       eventId,
       deduped: Boolean(existing),
-      source: DETECTOR,
+      source: detectorName,
     }),
   );
 }
