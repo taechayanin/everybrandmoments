@@ -30,7 +30,7 @@ Business rules ทั้งหมดของ CRM interaction อยู่ที
 - `lib/application/tasks/get-my-work-today.ts` (ใหม่) — 3 band queries
 - `app/accounts/[id]/actions.ts` (ใหม่) — 9 server actions: gate → zod strict → use case → revalidate
 - `lib/domain/activity.ts` — เพิ่ม `INTERACTION_NEXT_STATES` (6 ค่า)
-- `lib/contracts/crm.ts` — เพิ่ม `createFollowUp` + `nextState` ใน note/call/meeting; task priority เป็น optional (repo default NORMAL)
+- `lib/contracts/crm.ts` — เพิ่ม `createFollowUp` + `nextState` ใน note/call/meeting; task priority optional ที่ contract (default ตัดสินที่ application layer — P1 fix 1)
 - `tests/crm-usecases.test.ts` (ใหม่) — 13 เทสต์
 
 ## USE CASES IMPLEMENTED
@@ -39,7 +39,7 @@ createNote, logCall, logMeeting, getAccountTimeline, updateActivity, deleteActiv
 ## BUSINESS RULES
 - **Layering (req 1):** UI/action → use case → repo interface → adapter; actions ไม่แตะ repository ตรง, repositories ยังเป็น persistence ล้วน
 - **Cross-entity ownership (req 2):** contact / decisionMakerContact / opportunity / momentEvent ทุกตัวต้อง (a) resolve ได้ใน org (repos org-scoped → ต่าง org = null) และ (b) `entity.accountId === interaction.accountId`; follow-up task ที่ไม่ระบุ account จะ derive จาก ref แล้วบังคับกฎเดียวกัน
-- **Next state (req 5):** `INTERACTION_NEXT_STATES = FOLLOW_UP | WAITING_CUSTOMER | PROPOSAL | NURTURE | CLOSED | NO_ACTION` — optional field บน note/call/meeting เก็บใน `metadata_json`; กฎเดียว: FOLLOW_UP (หรือปุ่ม Save+Follow-up) ต้องมี nextAction — ไม่ overbuild workflow engine
+- **Next state (req 5):** `INTERACTION_NEXT_STATES = FOLLOW_UP | WAITING_CUSTOMER | PROPOSAL | NURTURE | CLOSED | NO_ACTION` — optional field บน note/call/meeting เก็บใน `metadata_json`; กฎเดียว: FOLLOW_UP (หรือปุ่ม Save+Follow-up) ต้องมีทั้ง nextAction และ nextActionAt (P1 fix 2) — ไม่ overbuild workflow engine
 - **System rows immutable:** update/delete ได้เฉพาะ NOTE/CALL/MEETING/EMAIL/LINE/VISIT
 - **AI (req 4):** ไม่มี AI call ใน path ไหนเลย — enrichment เป็น async job ของ Step 6
 
@@ -70,7 +70,6 @@ PASS
 PASS
 
 ## DEVIATIONS FROM PLAN
-- `CreateTaskSchema.priority` เปลี่ยนจาก `.default("NORMAL")` เป็น `.optional()` (default อยู่ที่ repository) — พฤติกรรมเท่ากัน, type ของ caller สะอาดกว่า
 - Server actions รวมเป็นไฟล์เดียว `app/accounts/[id]/actions.ts` (แผนเขียนเป็นรายชื่อ action ไม่ได้กำหนดไฟล์) — Step 4 UI mount จากหน้านี้
 - `updateActivity`/`deleteActivity` ใช้ `UpdateActivityCommand` ภายใน (activityId แยกจาก patch) — สอดคล้อง contract `UpdateActivitySchema`
 
@@ -80,4 +79,4 @@ PASS
 - Server actions ยังไม่ถูกเรียกจาก UI (Step 4) — build ตรวจแล้วว่า compile ผ่านใน app tree จริง
 
 ## NEXT PROPOSED STEP
-Step 4 — Account 360 UI (header + quick actions + timeline + composer + contacts panel) — **บล็อกด้วย Figma URL ที่ยังรอทีมส่ง** (open item เดียวของแผน); รอ `REVIEW APPROVED — PROCEED`
+Step 4 — Account 360 UI — design PDF ได้รับแล้ว; รอ reviewer ตัดสิน **scope alignment (a)/(b)** ใน Open Questions ของแผน แล้วรอ `REVIEW APPROVED — PROCEED STEP 4 ONLY`
