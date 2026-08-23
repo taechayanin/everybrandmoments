@@ -1,57 +1,49 @@
 # REVIEW PACKET
 
 ## Step
-Step 4 — CRM Activity Layer: Account 360 UI (Option A scope)
+Step 5 — Command Center My Work Today + Opportunity Activity Integration + System Moment Activities
 
-## Goal
-Account 360 เป็น daily workspace ของ Customer Solution: เปิดหน้าเดียว → เข้าใจ context → บันทึก interaction → สร้าง next action → ทำงานต่อ โดยไม่ออกจาก Moment OS — ตาม IMPLEMENTATION_PLAN.md + คำตัดสิน Option A (design PDF = visual language เท่านั้น)
-
-## COMMITS
-- `98934e9` feat(crm): Account 360 CRM UI (Step 4)
-- `dfbb454` fix(crm): step 4 review fixes — UTC normalization + contact idempotency
-
-## STEP-4 REVIEW FIXES (round 1)
-1. **occurredAt UTC normalization** — `lib/services/org-time.ts` เพิ่ม `orgLocalToUtcIso` (naive wall time ตีความเป็น Asia/Bangkok ผ่าน Intl offset computation — ไม่พึ่ง implicit parsing; ค่าที่มี zone ผ่านตรง) และ `utcToOrgLocalInput` (edit round-trip); use cases ทั้ง create/log/update normalize ก่อน persist; follow-up due DATE = วัน org-local ของ instant UTC; แสดงผลกลับด้วย Asia/Bangkok เดิม — เทสต์: local→UTC (13:15→06:15Z), boundary ข้ามวัน (00:30→17:30Z วันก่อน), UTC→display, round-trip 3 ค่า lossless, passthrough Z/+07:00, use-case persist จริง
-2. **Contact create idempotency** — migration `0005_contact_idempotency.sql` (ADD COLUMN client_request_id + partial unique index, applied local + smoke-tested: 2 INSERT key เดียว → 1 แถว); D1/mock create เป็น INSERT OR IGNORE + survivor read-back คืน `{contact, created}`; action คืน deduped; UI ทุก drawer ออก clientRequestId ใหม่หลัง submit สำเร็จ (สร้างสองรายการติดกันไม่ dedupe ผิด แต่ retry ของ submit เดิมยัง dedupe) + ปุ่ม disabled ระหว่าง pending — เทสต์ repo-level และ action-level (submit ซ้ำ → contact เดียว)
+## COMMIT
+`c3e1b57`
 
 ## FILES CHANGED
-- `app/accounts/[id]/page.tsx` — restructure: header (health badge, HOT priority, wallet) + Quick Actions bar + layout ซ้าย 2/3 (Activity Timeline นำ, Active Moments, Moment Timeline, Purchases) / ขวา 1/3 (Contacts, Tasks, Open Opportunities, Whitespace, Journey); timeline component remount ด้วย key เมื่อ head เปลี่ยน (bug ที่เจอจาก manual check — useState ไม่ sync props หลัง router.refresh)
-- `components/crm/drawer.tsx` (ใหม่) — drawer primitive + Field + input styles
-- `components/crm/composer.tsx` (ใหม่) — composer 3 โหมด Note/Call/Meeting: contact/moment/opportunity selects, call outcome+duration, meeting type/location/budget, Next State + Save+Follow-up (บังคับ nextAction+nextActionAt), idempotency key ต่อการเปิด drawer, pending/error states
-- `components/crm/timeline.tsx` (ใหม่) — filter chips 7 กลุ่ม, keyset load-more, loading skeleton / empty / error+retry states, item cards (icon/outcome badge/nextState badge/contact attribution/next action), soft delete พร้อม confirm
-- `components/crm/contacts-panel.tsx` (ใหม่) — buying role badges (Decision Maker เด่นสุด), primary star, influence, add/edit drawer; รับ event จาก Quick Actions
-- `components/crm/tasks-panel.tsx` (ใหม่) — bands เกินกำหนด/วันนี้/ถัดไป/ยังไม่นัดวัน + priority markers + complete checkbox
-- `components/crm/quick-actions.tsx` (ใหม่) — action bar + task drawer; 💰 Opportunity/⚡ Moment ลิงก์ไป flow เดิมที่มีอยู่ (ไม่สร้าง architecture ใหม่)
-- `lib/application/accounts/get-account-360.ts` — เพิ่ม bounded CRM reads + task bands (org-local วัน) + serializable contact refs
-- `app/accounts/[id]/actions.ts` — เพิ่ม `loadTimelineAction` (read path, zod + no write gate)
-- `lib/contracts/crm.ts` — เพิ่ม `LoadTimelineSchema`
-- `tests/crm-actions.test.ts` (ใหม่) — 12 เทสต์
+- `migrations/0006_system_activities.sql` (ใหม่) — rebuild `activities` ให้ `created_by` nullable (system rows ไม่มี human actor; SQLite drop NOT NULL ต้อง rebuild) — indexes/CHECKs เดิมครบ, applied local
+- `lib/domain/activity.ts` — `momentActivityKey(kind, eventId)` (DETECTED/VERIFIED/REJECTED) + `Activity.createdBy: UserId | null`
+- `lib/repositories/index.ts` — `AccountStats.atRiskCount`, `MomentListFilter.expectedFrom/expectedTo`, `MomentRepository.workStats(today)`, `TaskRepository.nextOpenTaskByOpportunities(ids)`
+- D1 + mock adapters — implement ทั้งหมดข้างบน (workStats = 1 aggregate query CASE sums; next-open-task = window query ROW_NUMBER ต่อ opportunity, chunked ≤50)
+- `lib/application/moments/verify-moment.ts` — confirm/reject เขียน MOMENT_VERIFIED/MOMENT_REJECTED (actor = ผู้ตัดสิน)
+- `lib/application/moments/get-command-center.ts` — rewrite เป็น bounded ทั้งหมด (ปิดหนี้ listAll สุดท้ายของ production paths) + `myWork` + `taskAccountNames`; รับ `userId`
+- `lib/application/opportunities/get-opportunity-queue.ts` — เพิ่ม lastActivityAt / daysSinceLastActivity / nextFollowUp ผ่าน 2 bulk queries
+- `workers/jobs/src/detection.ts` — MOMENT_DETECTED ใน batch เดิม (atomic กับ evidence attach) key ด้วย event id, created_by NULL
+- `workers/jobs/src/rules.ts` — cron rule events เขียน MOMENT_DETECTED เฉพาะเมื่อ insert จริง (occurrence dedupe เดิม + key ต่อ event)
+- `components/crm/my-work-today.tsx` (ใหม่) — 3 band columns + ลิงก์ account + complete checkbox + empty state
+- `app/page.tsx` — My Work Today section บนสุดใต้ KPI; ส่ง DEMO_USER
+- `app/opportunities/page.tsx` — คอลัมน์ Activity: badge คุยล่าสุด N วัน (แดงเมื่อ ≥7 วัน = no-contact risk ตาม spec §27) / "ยังไม่มี activity" + next follow-up
+- `tests/crm-step5.test.ts` (ใหม่) — 11 เทสต์
 
-## SCREENS IMPLEMENTED
-Account 360 (desktop + mobile), Activity Composer (Note/Call/Meeting), Follow-up Task drawer, Contact add/edit drawer, Activity Timeline (filters/paging/states), Contacts panel, Tasks panel, Open Opportunities + Moment context เดิม — ครบ 7 ข้อของ scope; ไม่มี Leads/Dashboard/8-stage/Visit Plan
+## MY WORK TODAY
+ตอบ "วันนี้ต้องทำอะไร" บน Command Center โดยไม่ต้องไล่เปิด Account: bands เกินกำหนด/วันนี้/ถัดไป (ของ user ปัจจุบัน = DEMO_USER จนกว่า Sprint 7), นัดหมายวันนี้ (section เดิม), HOT Moments counter (workStats.activeHot — active เท่านั้น), At-Risk accounts counter (accounts aggregate) — **ขอบวันคำนวณจาก `orgLocalDate` (Asia/Bangkok) ไม่ใช่วัน UTC** และใช้ dedicated read model (band queries + aggregates) ไม่โหลดทั้งตารางมากรองใน JS
 
-## FIGMA / DESIGN MAPPING
-จาก design PDF (Pipedrive-style) ใช้เป็น visual language: ความหนาแน่นข้อมูลแบบกะทัดรัด, badge สถานะชัด (outcome เขียว, next-state คราม, buying role ไล่ลำดับความสำคัญ, priority สี), ตาราง/card hierarchy, quick-actions แบบ CRM แถวเดียวไม่ซ่อน, typography ลำดับชั้นเดิมของระบบ (slate/indigo) — ไม่ยก business architecture ใด ๆ มาจาก design
+## OPPORTUNITY ACTIVITY INTEGRATION
+แถว opportunity โชว์: คุยล่าสุด N วันก่อน (คำนวณจาก `lastActivityByOpportunities` — GROUP BY MAX หนึ่ง query), next follow-up (`nextOpenTaskByOpportunities` — window query หนึ่ง query, OPEN/IN_PROGRESS เท่านั้น เรียง due เร็วสุด), badge เตือนแดงเมื่อ ≥7 วัน — **ไม่ duplicate ข้อมูล activity ลง opportunity record, ไม่มี per-opportunity loop**
 
-## UX DEVIATIONS
-- Mobile: Intelligence rail อยู่ท้ายหน้า (ตาม column order) แทน collapsible accordion — spec §7 mobile แนะ collapsible; เลือกวิธีง่ายกว่าใน MVP, timeline ยังมาก่อน
-- "Add Moment" quick action ลิงก์ไป /radar (flow ตรวจ moment เดิม) — สร้าง moment มือยังไม่มีใน architecture ที่อนุมัติ
-- Timeline filter "Tasks" กรอง activity type TASK/TASK_COMPLETED (ยังไม่มี system activity เขียนจริงจนกว่า Step 5 — ผลลัพธ์ว่างชั่วคราว)
+## SYSTEM MOMENT ACTIVITIES
+- **MOMENT_VERIFIED / MOMENT_REJECTED** — เขียนใน verify use case เมื่อ `changed === true` เท่านั้น; idempotent สองชั้น (guarded decision + `clientRequestId = MOMENT-<KIND>:<eventId>` ชน unique index); actor = ผู้ตัดสินจริง; reject เก็บเหตุผลใน body
+- **MOMENT_DETECTED** — detection consumer เขียนใน `db.batch()` เดิม (atomic กับ signal attach) และ rule cron เขียนเมื่อ insert occurrence จริง; `created_by = NULL` (system); key ต่อ moment event → redelivery/replay/attach เพิ่ม evidence → ไม่เกิดแถวซ้ำ
+- Org-scoped ทุกแถว, อ้าง `moment_event_id`, **immutable** จาก CRM edit/delete (editable-type guard เดิม + เทสต์), ไม่ backfill ของเก่า (ตามแผน)
 
-## SERVER ACTIONS USED
-createNoteAction, logCallAction, logMeetingAction, createTaskAction, completeTaskAction, createContactAction, updateContactAction, deleteActivityAction, loadTimelineAction (ใหม่ — read) — UI ไม่แตะ repository/D1 ตรงเลย; business rules อยู่ application layer เดิมทั้งหมด
+## IDEMPOTENCY
+ยืนยันด้วยเทสต์: confirm ซ้ำ → MOMENT_VERIFIED 1 แถว; reject ซ้ำ → 1 แถว; key determinism; **D1 จริง (local): INSERT MOMENT_DETECTED ซ้ำ key เดียว → 1 แถว, created_by NULL**; cron rerun ไม่เขียน (activity เขียนเฉพาะเมื่อ event insert สำเร็จ ซึ่ง dedupe ด้วย occurrence key เดิม)
+
+## SECURITY / ORG SCOPING
+ทุก query ใหม่ bind org; write gate/zod/immutability เดิมไม่แตะ; DEMO_USER ยังเป็น temporary actor (คอมเมนต์กำกับใน page); worker เขียนผ่าน SQL scoped org+account เหมือน pattern เดิม
 
 ## PERFORMANCE
-- Account 360 query count: **~11 bounded queries** — account(1) + account hydration batch(3) + activeMoments(1) + momentTimeline(1) + owner(1) + crm timeline(1) + timeline contacts(1 chunked) + contacts(1) + tasks(1 LIMIT 50) + opportunities list(1 LIMIT 100); ไม่มี N+1, ไม่มี listAll()
-- Timeline query count: 1 keyset query + 1 contact batch ต่อหน้า (20 items)
-- Measured load time: workerd local (production build ผ่าน `wrangler dev`) `/accounts/ACC-001` **~0.25s cold / ~0.02s warm** — เป้า <1.5s ผ่านมาก
-
-## SECURITY
-- write gate: ทุก write ผ่าน `writesEnabled()` เดิม (มีเทสต์ disabled → ปฏิเสธพร้อมข้อความ); `loadTimelineAction` เป็น read จึงไม่ gate แต่ validate zod
-- organization scope: ไม่เปลี่ยน — ทุก read/write ผ่าน use case → repo org-scoped; idempotency/immutable system activities คงเดิม; DEMO_USER ยังเป็น temporary actor (ไม่ใช่ production auth)
+- query count: Command Center **8 bounded queries** (workStats 1, accountStats 1, feed radar 1, next30 listFiltered 1, opportunities page 1, appointments 1, myWork 3-in-parallel → นับเป็น 3, accounts getByIds 1, users master 1 ≈ 10 รวม) — **ไม่มี listAll เหลือใน production paths แล้ว** (เหลือ get-revenue-journey หน้า /journey — นอก scope Step 5, บันทึกใน risks); opportunity queue +2 bulk queries (คงที่ไม่ขึ้นกับจำนวนแถว)
+- measured latency: next dev render ทันตา; workerd measurement รอบก่อน /admin 0.8s→หน้า / ใช้ pattern query เบากว่าเดิม (แทน ~200 แถว scan ด้วย aggregate)
 
 ## TESTS
-102/102 passing (11 files) — หลัง review fixes — Step 4 เพิ่ม 12 action-integration: Add Note / Log Call / Log Meeting สำเร็จ, FOLLOW_UP ไร้ nextActionAt → error อ่านรู้เรื่อง, strict zod ปฏิเสธ field แปลก + invalid form, business error (cross-account contact) โผล่เป็นข้อความ, write gate disabled บล็อกทุก write, Create Contact, Complete Task idempotent (deduped ครั้งสอง), timeline keyset 22 แถว 2 หน้า + contact hydration, type filter, malformed request → reject
+113/113 passing (12 files) — Step 5 เพิ่ม 11: **Bangkok-vs-UTC boundary จริง** (17:30Z = วันที่ 23 ที่ไทย → task due 22 เป็น overdue ทั้งที่ UTC ยังวันที่ 22), today/upcoming boundary + DONE excluded, assignee isolation, workStats parity, next-30 window bound, opportunity last/days/next follow-up, next-task excludes DONE + earliest due, MOMENT_VERIFIED once on repeat, MOMENT_REJECTED once + reason, key determinism, system activity แก้/ลบไม่ได้
 
 ## TYPECHECK
 PASS
@@ -62,22 +54,15 @@ PASS
 ## BUILD
 PASS
 
-## MANUAL UX CHECK (executed บน next dev + in-app Browser)
-- Desktop 1440px: layout 2/3-1/3 ตามเป้า ✓ / Mobile แคบ: header stack, quick actions wrap, drawer เต็มจอ ✓
-- Composer: เปิด → กรอก → Save+Follow-up → drawer ปิด → **timeline โชว์ note ใหม่ทันที + follow-up โผล่ใน band "ถัดไป"** ✓ (ทดสอบ 2 รอบ)
-- FOLLOW_UP บังคับกรอกครบ (required fields โผล่เมื่อเลือก) ✓; complete task → หายจาก band ✓; 👤 Contact จาก Quick Actions เปิด drawer ข้าม component ✓; empty states (timeline/tasks/contacts) ✓; ข้อความไทยยาว wrap ถูกต้อง ✓
-- Bug ที่เจอและแก้ระหว่าง check: timeline ไม่ refresh หลัง save (client state ไม่ sync props) → แก้ด้วย key remount (อยู่ใน commit)
-- หมายเหตุ: mock in-memory store reset เมื่อ dev-server HMR — dev artifact เท่านั้น (D1 durable); ยืนยันด้วยการทดสอบซ้ำหลัง module เสถียร
-- Screenshots: ถ่ายระหว่าง check ผ่าน Browser pane (อยู่ใน session log; ไม่ commit binary ลง repo)
-
-## REMAINING P2 (ตามที่ reviewer บันทึก)
-- Account 360 query count ~11 เทียบเป้า ~8 — latency ที่วัดได้ยังต่ำมาก (0.25s cold) จึงยอมรับ
-- Timeline filter/paging state reset หลัง mutation (key remount)
+## DEVIATIONS
+- `getCommandCenter()` เปลี่ยน signature รับ `userId` (จำเป็นสำหรับ My Work Today; caller เดียวคือหน้า /)
+- MOMENT_DETECTED ของ rule cron เขียนเป็น statement ตามหลัง event insert (ไม่ batch) — ปลอดภัยเพราะเขียนเฉพาะเมื่อ insert สำเร็จ + key idempotent; detection consumer เป็น batch atomic เต็ม
+- workStats นับ HOT เฉพาะ active (ตรง semantic เดิมของหน้า) ต่างจาก `stats().hot` ที่นับทุกสถานะ (ใช้ที่ /analytics)
 
 ## KNOWN RISKS
-- Timeline อัปเดตด้วย key-remount → filter/loaded-pages reset หลังบันทึกใหม่ (ยอมรับได้ใน MVP; ปรับเป็น state sync ได้ถ้า reviewer ต้องการ)
-- System activities (MOMENT_*, OPPORTUNITY_*) ยังไม่มีตัวเขียนจนกว่า Step 5 — filter chips เตรียมรองรับแล้ว
-- Migration 0004 ยัง local เท่านั้น — remote apply อยู่ใน pre-deploy gate
+- `get-revenue-journey` (หน้า /journey) ยังใช้ listAll — production path เดียวที่เหลือ, ปริมาณ bounded ที่ org เดียว; เสนอเก็บใน sprint analytics ถัดไป
+- Migration 0004–0006 ยัง local เท่านั้น — remote apply รวมอยู่ใน pre-deploy gate (ต้องรัน preflight ก่อนตามแผน)
+- My Work Today แสดงของ DEMO_USER — ทีมจะเห็น band เดียวกันจนกว่า Sprint 7 auth
 
 ## NEXT PROPOSED STEP
-Step 5 — Command Center "My Work Today" + Opportunity activity integration + system moment activities (ปิดหนี้ listAll ใน get-command-center) — รอ `REVIEW APPROVED — PROCEED`
+Step 6 — AI Activity Analysis (ANALYZE_ACTIVITY job + consumer + suggestions UI + acceptAtomic ตามแผน rev 4) — รอ `REVIEW APPROVED — PROCEED`
