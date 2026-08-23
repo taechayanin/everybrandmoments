@@ -1,4 +1,4 @@
-import type { AccountId, UserId } from "./ids";
+import type { AccountId, IndustryId, UserId } from "./ids";
 import type { MomentCode } from "./moment";
 
 export type AccountTier = "Strategic" | "Key" | "Growth" | "Standard";
@@ -37,7 +37,10 @@ export interface Contact {
 export interface Account {
   id: AccountId;
   name: string;
+  /** Legacy free-text label — display only until every UI reads the master. */
   industry: string;
+  /** Industry master reference (0009 backfill); null = unmapped legacy. */
+  industryId: IndustryId | null;
   employeeSize: number;
   location: string;
   branchCount: number;

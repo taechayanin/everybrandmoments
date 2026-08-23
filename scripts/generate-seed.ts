@@ -5,6 +5,7 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { MASTER_MOMENTS } from "../lib/domain/master-moments";
+import { INDUSTRIES, PROJECT_TYPES } from "../lib/domain/industry";
 import { ACCOUNTS } from "../lib/infrastructure/mock/accounts";
 import { MOMENT_EVENTS } from "../lib/infrastructure/mock/events";
 import { APPOINTMENTS, OPPORTUNITIES } from "../lib/infrastructure/mock/opportunities";
@@ -31,6 +32,7 @@ const CLEAR_ORDER = [
   "moment_events", "solution_relations", "solution_packages",
   "solution_industries", "solution_stakeholders", "solutions",
   "orders_external", "account_whitespace", "contacts", "accounts",
+  "industries", "project_types",
   "master_moment_next", "moment_discovery_questions", "master_moments",
   "users", "organizations",
 ];
@@ -47,9 +49,21 @@ for (const u of USERS) {
   );
 }
 
+// Thai masters (0009) — groups precede subs so parent FKs always resolve.
+for (const i of INDUSTRIES) {
+  lines.push(
+    `INSERT INTO industries (id, name_th, parent_id, active) VALUES (${q(i.id)}, ${q(i.nameTh)}, ${q(i.parentId ?? null)}, ${b(i.active)});`,
+  );
+}
+for (const p of PROJECT_TYPES) {
+  lines.push(
+    `INSERT INTO project_types (id, name_th, selectable, active) VALUES (${q(p.id)}, ${q(p.nameTh)}, ${b(p.selectable)}, ${b(p.active)});`,
+  );
+}
+
 for (const m of MASTER_MOMENTS) {
   lines.push(
-    `INSERT INTO master_moments (code, no, phase, description, color, active) VALUES (${q(m.code)}, ${m.no}, ${q(m.phase)}, ${q(m.description)}, ${q(m.color)}, 1);`,
+    `INSERT INTO master_moments (code, no, phase, description, thai_name, color, active) VALUES (${q(m.code)}, ${m.no}, ${q(m.phase)}, ${q(m.description)}, ${q(m.thaiName)}, ${q(m.color)}, 1);`,
   );
 }
 // Second pass — questions and next-moment relations reference moments that
@@ -69,7 +83,7 @@ for (const m of MASTER_MOMENTS) {
 
 for (const a of ACCOUNTS) {
   lines.push(
-    `INSERT INTO accounts (id, organization_id, name, industry, employee_size, location, branch_count, tier, owner_id, customer_since, lifetime_value, gross_profit, health, account_score, notes, created_at, updated_at) VALUES (${q(a.id)}, ${q(ORG)}, ${q(a.name)}, ${q(a.industry)}, ${a.employeeSize}, ${q(a.location)}, ${a.branchCount}, ${q(a.tier)}, ${q(a.ownerId)}, ${q(a.customerSince)}, ${a.ltv}, ${a.grossProfit}, ${q(a.health)}, ${a.accountScore}, ${q(a.notes ?? null)}, ${q(NOW)}, ${q(NOW)});`,
+    `INSERT INTO accounts (id, organization_id, name, industry, industry_id, employee_size, location, branch_count, tier, owner_id, customer_since, lifetime_value, gross_profit, health, account_score, notes, created_at, updated_at) VALUES (${q(a.id)}, ${q(ORG)}, ${q(a.name)}, ${q(a.industry)}, ${q(a.industryId)}, ${a.employeeSize}, ${q(a.location)}, ${a.branchCount}, ${q(a.tier)}, ${q(a.ownerId)}, ${q(a.customerSince)}, ${a.ltv}, ${a.grossProfit}, ${q(a.health)}, ${a.accountScore}, ${q(a.notes ?? null)}, ${q(NOW)}, ${q(NOW)});`,
   );
   a.contacts.forEach((c, i) => {
     // Legacy free-text role is a job title; the first contact of each

@@ -19,7 +19,11 @@ import type {
   SuggestionId,
   TaskId,
   TaskPriority,
+  Industry,
+  IndustryId,
   MasterMoment,
+  ProjectType,
+  ProjectTypeId,
   MomentCode,
   MomentEvent,
   MomentEventId,
@@ -174,6 +178,21 @@ export interface SignalRepository {
 export interface MasterMomentRepository {
   getByCode(code: MomentCode): Promise<MasterMoment | null>;
   listAll(): Promise<MasterMoment[]>;
+}
+
+// ---------- Thai masters (Project Pipeline Step 1) ----------
+
+export interface IndustryRepository {
+  getById(id: IndustryId): Promise<Industry | null>;
+  /** Groups + sub-industries, groups first then subs, stable order. */
+  listAll(): Promise<Industry[]>;
+}
+
+export interface ProjectTypeRepository {
+  getById(id: ProjectTypeId): Promise<ProjectType | null>;
+  listAll(): Promise<ProjectType[]>;
+  /** Only types offerable for NEW projects — excludes legacy sentinels. */
+  listSelectable(): Promise<ProjectType[]>;
 }
 
 // ---------- Solutions ----------
@@ -458,6 +477,8 @@ export interface Repositories {
   accounts: AccountRepository;
   moments: MomentRepository;
   masterMoments: MasterMomentRepository;
+  industries: IndustryRepository;
+  projectTypes: ProjectTypeRepository;
   solutions: SolutionRepository;
   opportunities: OpportunityRepository;
   users: UserRepository;

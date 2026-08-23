@@ -9,3 +9,4 @@ export * from "./domain/activity";
 export * from "./domain/solution";
 export * from "./domain/opportunity";
 export * from "./domain/user";
+export * from "./domain/industry";

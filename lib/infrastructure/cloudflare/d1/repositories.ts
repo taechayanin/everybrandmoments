@@ -14,7 +14,11 @@ import type {
   CrmTask,
   CustomerHealth,
   InfluenceLevel,
+  Industry,
+  IndustryId,
   MasterMoment,
+  ProjectType,
+  ProjectTypeId,
   MomentCode,
   MomentEvent,
   MomentEventId,
@@ -59,7 +63,9 @@ import type {
   CreateSuggestionInput,
   InteractionWriteRepository,
   LogInteractionInput,
+  IndustryRepository,
   MasterMomentRepository,
+  ProjectTypeRepository,
   MomentListFilter,
   MomentRadarQuery,
   MomentRepository,
@@ -96,6 +102,8 @@ interface CacheEntry<T> {
 
 let masterMomentsCache: CacheEntry<MasterMoment[]> | null = null;
 let solutionsCache: CacheEntry<Solution[]> | null = null;
+let industriesCache: CacheEntry<Industry[]> | null = null;
+let projectTypesCache: CacheEntry<ProjectType[]> | null = null;
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Row = Record<string, any>;
@@ -133,6 +141,7 @@ function mapAccount(
     id: r.id as AccountId,
     name: r.name,
     industry: r.industry ?? "",
+    industryId: (r.industry_id as IndustryId | null) ?? null,
     employeeSize: r.employee_size,
     location: r.location ?? "",
     branchCount: r.branch_count,
@@ -853,6 +862,7 @@ class D1MasterMomentRepository implements MasterMomentRepository {
       no: r.no,
       phase: r.phase,
       description: r.description,
+      thaiName: r.thai_name ?? r.description,
       color: r.color ?? "#94a3b8",
       discoveryQuestions: questions.results
         .filter((q: Row) => q.moment_code === r.code)
@@ -883,6 +893,78 @@ class D1MasterMomentRepository implements MasterMomentRepository {
     const data = await this.hydrate(res.results);
     masterMomentsCache = { at: Date.now(), data };
     return data;
+  }
+}
+
+class D1IndustryRepository implements IndustryRepository {
+  constructor(private db: D1Database) {}
+
+  private map(r: Row): Industry {
+    return {
+      id: r.id as IndustryId,
+      nameTh: r.name_th,
+      parentId: (r.parent_id as IndustryId | null) ?? null,
+      active: r.active === 1,
+    };
+  }
+
+  async listAll(): Promise<Industry[]> {
+    if (industriesCache && Date.now() - industriesCache.at < MASTER_CACHE_TTL_MS) {
+      return industriesCache.data;
+    }
+    const rows = await this.db
+      .prepare(
+        "SELECT * FROM industries WHERE active = 1 ORDER BY (parent_id IS NOT NULL), id",
+      )
+      .all<Row>();
+    const data = rows.results.map((r) => this.map(r));
+    industriesCache = { at: Date.now(), data };
+    return data;
+  }
+
+  async getById(id: IndustryId): Promise<Industry | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM industries WHERE id = ?")
+      .bind(id)
+      .first<Row>();
+    return row ? this.map(row) : null;
+  }
+}
+
+class D1ProjectTypeRepository implements ProjectTypeRepository {
+  constructor(private db: D1Database) {}
+
+  private map(r: Row): ProjectType {
+    return {
+      id: r.id as ProjectTypeId,
+      nameTh: r.name_th,
+      selectable: r.selectable === 1,
+      active: r.active === 1,
+    };
+  }
+
+  async listAll(): Promise<ProjectType[]> {
+    if (projectTypesCache && Date.now() - projectTypesCache.at < MASTER_CACHE_TTL_MS) {
+      return projectTypesCache.data;
+    }
+    const rows = await this.db
+      .prepare("SELECT * FROM project_types ORDER BY selectable DESC, id")
+      .all<Row>();
+    const data = rows.results.map((r) => this.map(r));
+    projectTypesCache = { at: Date.now(), data };
+    return data;
+  }
+
+  async getById(id: ProjectTypeId): Promise<ProjectType | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM project_types WHERE id = ?")
+      .bind(id)
+      .first<Row>();
+    return row ? this.map(row) : null;
+  }
+
+  async listSelectable(): Promise<ProjectType[]> {
+    return (await this.listAll()).filter((p) => p.active && p.selectable);
   }
 }
 
@@ -2011,6 +2093,8 @@ export async function createD1Repositories(): Promise<Repositories> {
     accounts: new D1AccountRepository(db),
     moments: new D1MomentRepository(db),
     masterMoments: new D1MasterMomentRepository(db),
+    industries: new D1IndustryRepository(db),
+    projectTypes: new D1ProjectTypeRepository(db),
     solutions: new D1SolutionRepository(db),
     opportunities: new D1OpportunityRepository(db),
     users: new D1UserRepository(db),

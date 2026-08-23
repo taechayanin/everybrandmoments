@@ -47,6 +47,7 @@ import type {
   CreateOpportunityInput,
   CreateSignalInput,
   CreateSuggestionInput,
+  IndustryRepository,
   InteractionWriteRepository,
   LogInteractionInput,
   MasterMomentRepository,
@@ -57,6 +58,7 @@ import type {
   MomentWorkStats,
   OpportunityRepository,
   Paginated,
+  ProjectTypeRepository,
   Repositories,
   SignalRepository,
   SolutionRepository,
@@ -69,6 +71,15 @@ import type {
   UserRepository,
 } from "@/lib/repositories";
 import { MASTER_MOMENTS } from "@/lib/domain/master-moments";
+import {
+  INDUSTRIES,
+  PROJECT_TYPES,
+  industryById,
+  projectTypeById,
+  type Industry,
+  type ProjectType,
+} from "@/lib/domain/industry";
+import type { IndustryId, ProjectTypeId } from "@/lib/domain/ids";
 import { ACCOUNTS } from "./accounts";
 import { MOMENT_EVENTS } from "./events";
 import { APPOINTMENTS, OPPORTUNITIES } from "./opportunities";
@@ -323,6 +334,30 @@ class MockMasterMomentRepository implements MasterMomentRepository {
 
   async listAll(): Promise<MasterMoment[]> {
     return MASTER_MOMENTS;
+  }
+}
+
+class MockIndustryRepository implements IndustryRepository {
+  async getById(id: IndustryId): Promise<Industry | null> {
+    return industryById.get(id) ?? null;
+  }
+
+  async listAll(): Promise<Industry[]> {
+    return [...INDUSTRIES];
+  }
+}
+
+class MockProjectTypeRepository implements ProjectTypeRepository {
+  async getById(id: ProjectTypeId): Promise<ProjectType | null> {
+    return projectTypeById.get(id) ?? null;
+  }
+
+  async listAll(): Promise<ProjectType[]> {
+    return [...PROJECT_TYPES];
+  }
+
+  async listSelectable(): Promise<ProjectType[]> {
+    return PROJECT_TYPES.filter((p) => p.active && p.selectable);
   }
 }
 
@@ -985,6 +1020,8 @@ export function createMockRepositories(): Repositories {
     accounts: new MockAccountRepository(),
     moments,
     masterMoments: new MockMasterMomentRepository(),
+    industries: new MockIndustryRepository(),
+    projectTypes: new MockProjectTypeRepository(),
     solutions: new MockSolutionRepository(),
     opportunities: new MockOpportunityRepository(),
     users: new MockUserRepository(),

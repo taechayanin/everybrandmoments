@@ -91,6 +91,8 @@ export interface MasterMoment {
   no: number; // 1..20
   phase: LifecyclePhase;
   description: string;
+  /** ชื่อไทยทางการ (handoff §19) — Thai-first UI; code stays language-neutral. */
+  thaiName: string;
   color: string;
   discoveryQuestions: string[];
   nextMoments: MomentCode[];

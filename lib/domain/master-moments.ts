@@ -1,4 +1,32 @@
-import type { LifecyclePhase, MasterMoment } from "./moment";
+import type { LifecyclePhase, MasterMoment, MomentCode } from "./moment";
+
+/**
+ * ชื่อไทยทางการของ 20 Business Moments (handoff §19) — map 1:1 กับ code เดิม
+ * (codes ไม่เปลี่ยน — มี FK/data ผูกอยู่). Record<MomentCode, string> ทำให้
+ * key ขาด/เกินเป็น type error ทันที.
+ */
+export const THAI_MOMENT_NAMES: Record<MomentCode, string> = {
+  "EBM Start": "เริ่มต้นธุรกิจ",
+  "EBM Build": "สร้างแบรนด์",
+  "EBM Hire": "รับคนใหม่",
+  "EBM Welcome": "ต้อนรับ",
+  "EBM Launch": "เปิดตัว",
+  "EBM Sell": "กระตุ้นยอดขาย",
+  "EBM Deliver": "ส่งมอบ",
+  "EBM Thanks": "ขอบคุณ",
+  "EBM Repeat": "ซื้อซ้ำ / ใช้ซ้ำ",
+  "EBM Engage": "สร้างความผูกพัน",
+  "EBM Grow": "เติบโต",
+  "EBM Milestone": "ก้าวสำคัญ",
+  "EBM Celebrate": "เฉลิมฉลอง",
+  "EBM Season": "เทศกาลและโอกาสพิเศษ",
+  "EBM Expand": "ขยายธุรกิจ",
+  "EBM Change": "เปลี่ยนแปลง",
+  "EBM Recover": "กู้ความเชื่อมั่น",
+  "EBM Return": "ดึงกลับมา",
+  "EBM Farewell": "อำลา",
+  "EBM Close": "ปิดหรือส่งต่อธุรกิจ",
+};
 
 export const LIFECYCLE_PHASES: { key: LifecyclePhase; no: string; label: string }[] = [
   { key: "START", no: "01", label: "Start" },
@@ -10,7 +38,7 @@ export const LIFECYCLE_PHASES: { key: LifecyclePhase; no: string; label: string 
   { key: "EXIT", no: "07", label: "Exit / Legacy" },
 ];
 
-export const MASTER_MOMENTS: MasterMoment[] = [
+const RAW_MOMENTS: Omit<MasterMoment, "thaiName">[] = [
   {
     code: "EBM Start",
     no: 1,
@@ -317,6 +345,11 @@ export const MASTER_MOMENTS: MasterMoment[] = [
     nextMoments: ["EBM Start"],
   },
 ];
+
+export const MASTER_MOMENTS: MasterMoment[] = RAW_MOMENTS.map((m) => ({
+  ...m,
+  thaiName: THAI_MOMENT_NAMES[m.code],
+}));
 
 export const momentByCode = new Map<string, MasterMoment>(MASTER_MOMENTS.map((m) => [m.code, m]));
 

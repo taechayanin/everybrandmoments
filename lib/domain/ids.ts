@@ -8,6 +8,8 @@ export type SolutionId = `SOL-${string}`;
 export type MomentEventId = `ME-${string}`;
 export type OpportunityId = `OPP-${string}`;
 export type OrganizationId = `ORG-${string}`;
+export type IndustryId = `IND-${string}`;
+export type ProjectTypeId = `PT-${string}`;
 
 export function isAccountId(v: string): v is AccountId {
   return v.startsWith("ACC-");
@@ -27,4 +29,12 @@ export function isMomentEventId(v: string): v is MomentEventId {
 
 export function isOpportunityId(v: string): v is OpportunityId {
   return v.startsWith("OPP-");
+}
+
+export function isIndustryId(v: string): v is IndustryId {
+  return v.startsWith("IND-");
+}
+
+export function isProjectTypeId(v: string): v is ProjectTypeId {
+  return v.startsWith("PT-");
 }

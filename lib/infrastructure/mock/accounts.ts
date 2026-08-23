@@ -1,4 +1,5 @@
 import type { Account, WhitespaceCategory } from "@/lib/types";
+import { LEGACY_INDUSTRY_MAP } from "@/lib/domain/industry";
 
 const W = (bought: WhitespaceCategory[]): Record<WhitespaceCategory, boolean> => {
   const all: WhitespaceCategory[] = [
@@ -18,7 +19,7 @@ const W = (bought: WhitespaceCategory[]): Record<WhitespaceCategory, boolean> =>
   >;
 };
 
-export const ACCOUNTS: Account[] = [
+const RAW_ACCOUNTS: Omit<Account, "industryId">[] = [
   {
     id: "ACC-001",
     name: "ABC Clinic",
@@ -454,5 +455,12 @@ export const ACCOUNTS: Account[] = [
     notes: "ครบรอบ 5 ปี เดือนกันยายน 2026 — วางแผนจัดปาร์ตี้ + Rebrand เล็กน้อย",
   },
 ];
+
+// industryId derives from the same legacy-text mapping migration 0009 uses,
+// so mock and D1 stay in lockstep.
+export const ACCOUNTS: Account[] = RAW_ACCOUNTS.map((a) => ({
+  ...a,
+  industryId: LEGACY_INDUSTRY_MAP[a.industry] ?? null,
+}));
 
 export const accountById = new Map<string, Account>(ACCOUNTS.map((a) => [a.id, a]));
