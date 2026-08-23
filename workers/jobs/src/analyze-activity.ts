@@ -167,6 +167,19 @@ export async function analyzeWithClaude(
 
 const ANALYZABLE_TYPES = ["NOTE", "CALL", "MEETING", "EMAIL", "LINE", "VISIT"];
 
+/** Terminal outbox transition — analysis finished (suggestion stored or a
+ * safe skip). Retry-class errors never reach this, so the reconciler can
+ * still recover them. */
+async function markProcessed(db: D1Database, job: AnalyzeActivityJob): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE activities SET analysis_status = 'PROCESSED', updated_at = ?
+       WHERE organization_id = ? AND account_id = ? AND id = ?`,
+    )
+    .bind(new Date().toISOString(), job.organizationId, job.accountId, job.activityId)
+    .run();
+}
+
 export async function analyzeActivityJob(
   db: D1Database,
   job: AnalyzeActivityJob,
@@ -194,6 +207,8 @@ export async function analyzeActivityJob(
     console.log(
       JSON.stringify({ event: "ai_analysis_skipped", reason: "no_activity", activityId: job.activityId }),
     );
+    // Deleted/ineligible rows are terminal too — do not reconcile forever.
+    await markProcessed(db, job);
     return;
   }
 
@@ -228,6 +243,7 @@ export async function analyzeActivityJob(
         organizationId: job.organizationId,
       }),
     );
+    await markProcessed(db, job);
     return;
   }
 
@@ -268,6 +284,8 @@ export async function analyzeActivityJob(
       JSON.stringify(payload), payload.confidence, now,
     )
     .run();
+
+  await markProcessed(db, job);
 
   console.log(
     JSON.stringify({

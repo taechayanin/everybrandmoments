@@ -41,6 +41,15 @@ export const ACTIVITY_TYPES = [
 ] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];
 
+/** Human interaction types eligible for AI analysis + edit/delete. */
+export const ANALYZABLE_ACTIVITY_TYPES = [
+  "NOTE", "CALL", "MEETING", "EMAIL", "LINE", "VISIT",
+] as const;
+
+/** Outbox lifecycle of the async AI analysis (Step-6 P0). */
+export const ANALYSIS_STATUSES = ["PENDING", "QUEUED", "PROCESSED"] as const;
+export type AnalysisStatus = (typeof ANALYSIS_STATUSES)[number];
+
 export const CALL_OUTCOMES = [
   "CONNECTED", "NO_ANSWER", "CALL_BACK", "INTERESTED",
   "NOT_INTERESTED", "QUALIFIED", "FOLLOW_UP",
@@ -134,6 +143,8 @@ export interface Activity {
   /** Type-specific extras (call duration, meeting type, budget…) — validated before write. */
   metadata: Record<string, unknown> | null;
   deletedAt: string | null;
+  /** AI-analysis outbox state; null = not eligible / legacy row. */
+  analysisStatus: AnalysisStatus | null;
 }
 
 /** CRM follow-up task (spec §17) — canonical uppercase status everywhere. */

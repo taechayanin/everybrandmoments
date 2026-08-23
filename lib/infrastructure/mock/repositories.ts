@@ -26,7 +26,11 @@ import type {
 } from "@/lib/types";
 import { isActiveMomentStatus } from "@/lib/domain/moment";
 import { priorityOf, totalScore } from "@/lib/domain/score";
-import { followUpTaskKey, suggestionTaskKey } from "@/lib/domain/activity";
+import {
+  ANALYZABLE_ACTIVITY_TYPES,
+  followUpTaskKey,
+  suggestionTaskKey,
+} from "@/lib/domain/activity";
 import type {
   AccountRepository,
   AccountStats,
@@ -433,6 +437,11 @@ function buildActivity(id: ActivityId, input: CreateActivityInput, now: string):
     updatedAt: now,
     metadata: input.metadata ?? null,
     deletedAt: null,
+    analysisStatus: (ANALYZABLE_ACTIVITY_TYPES as readonly string[]).includes(
+      input.activityType,
+    )
+      ? "PENDING"
+      : null,
   };
 }
 
@@ -591,6 +600,20 @@ class MockActivityRepository implements ActivityRepository {
       if (!prev || a.occurredAt > prev) out.set(a.opportunityId, a.occurredAt);
     }
     return out;
+  }
+
+  async markAnalysisStatus(
+    ids: ActivityId[],
+    status: "QUEUED" | "PROCESSED",
+  ): Promise<void> {
+    const wanted = new Set<string>(ids);
+    const now = new Date().toISOString();
+    for (const a of crmActivities) {
+      if (wanted.has(a.id)) {
+        a.analysisStatus = status;
+        a.updatedAt = now;
+      }
+    }
   }
 }
 
@@ -751,8 +774,13 @@ class MockSuggestionRepository implements SuggestionRepository {
   }
 
   async create(input: CreateSuggestionInput): Promise<ActivitySuggestion> {
+    // Parity with D1: deterministic id per activity — a duplicate delivery
+    // resolves to the existing suggestion instead of creating another.
+    const deterministicId = `SUG-${input.activityId}` as SuggestionId;
+    const existing = crmSuggestions.find((s) => s.id === deterministicId);
+    if (existing) return existing;
     const suggestion: ActivitySuggestion = {
-      id: `SUG-${crypto.randomUUID()}` as SuggestionId,
+      id: deterministicId,
       activityId: input.activityId,
       payload: input.payload,
       confidence: input.confidence ?? null,
@@ -826,6 +854,8 @@ class MockSuggestionDecisionWriteRepository implements SuggestionDecisionWriteRe
         potentialWalletMax: 0,
         ownerId: input.userId,
       });
+      // Parity with D1 moment_event_solutions attaches (Step-6 P1).
+      event.recommendedSolutionIds = [...input.moment.solutionIds];
       momentEventId = event.id;
     }
     let taskId: string | null = null;

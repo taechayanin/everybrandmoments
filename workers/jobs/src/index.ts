@@ -72,6 +72,10 @@ export default {
     // Signal insert + queue send are not atomic (review 🔴 §6): re-enqueue
     // signals stuck `pending` for >15 minutes on every scheduled run.
     await reconcilePendingSignals(env);
+    // Same durability contract for AI activity analysis (Step-6 P0): stale
+    // PENDING (enqueue failed) or QUEUED (lost in flight) outbox rows are
+    // re-enqueued; the deterministic suggestion id makes duplicates harmless.
+    await reconcilePendingAnalyses(env);
   },
 } satisfies ExportedHandler<JobsEnv>;
 
@@ -160,6 +164,44 @@ async function reconcilePendingSignals(env: JobsEnv): Promise<void> {
   if (orphans.results.length > 0) {
     console.log(
       JSON.stringify({ event: "signal_reconciliation", found: orphans.results.length, requeued }),
+    );
+  }
+}
+
+async function reconcilePendingAnalyses(env: JobsEnv): Promise<void> {
+  const cutoff = new Date(Date.now() - RECONCILE_AFTER_MS).toISOString();
+  const stale = await env.DB.prepare(
+    `SELECT id, organization_id, account_id FROM activities
+     WHERE analysis_status IN ('PENDING', 'QUEUED') AND updated_at < ?
+     LIMIT 50`,
+  )
+    .bind(cutoff)
+    .all<{ id: string; organization_id: string; account_id: string }>();
+
+  let requeued = 0;
+  for (const a of stale.results) {
+    const job = JobSchema.safeParse({
+      jobType: "ANALYZE_ACTIVITY",
+      organizationId: a.organization_id,
+      accountId: a.account_id,
+      activityId: a.id,
+    });
+    if (!job.success) continue;
+    await env.MOMENT_JOBS.send(job.data);
+    await env.DB.prepare(
+      "UPDATE activities SET analysis_status = 'QUEUED', updated_at = ? WHERE id = ?",
+    )
+      .bind(new Date().toISOString(), a.id)
+      .run();
+    requeued += 1;
+  }
+  if (stale.results.length > 0) {
+    console.log(
+      JSON.stringify({
+        event: "analysis_reconciliation",
+        found: stale.results.length,
+        requeued,
+      }),
     );
   }
 }

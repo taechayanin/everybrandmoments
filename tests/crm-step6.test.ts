@@ -75,7 +75,7 @@ describe("async enqueue after CRM save", () => {
     ).toBe(note.activity.id);
   });
 
-  it("CRM save succeeds even when the analysis queue is down", async () => {
+  it("CRM save succeeds when the queue is down — and stays recoverable (P0)", async () => {
     __setAnalysisQueueSinkForTests(async () => {
       throw new Error("queue unavailable");
     });
@@ -85,7 +85,35 @@ describe("async enqueue after CRM save", () => {
     });
     spy.mockRestore();
     expect(result.deduped).toBe(false);
-    expect(result.activity.body).toBe("ai down");
+    // Durable outbox: the failed dispatch leaves the row PENDING for the
+    // cron reconciler — never silently lost.
+    const stored = await repos.activities.getById(result.activity.id as never);
+    expect(stored?.analysisStatus).toBe("PENDING");
+  });
+
+  it("a successful dispatch marks the outbox QUEUED", async () => {
+    __setAnalysisQueueSinkForTests(async () => {});
+    const result = await createNote({
+      accountId: ACC, body: "queued ok", clientRequestId: rid(), createdBy: OWNER,
+    });
+    const stored = await repos.activities.getById(result.activity.id as never);
+    expect(stored?.analysisStatus).toBe("QUEUED");
+  });
+
+  it("duplicate delivery yields exactly one suggestion (deterministic id)", async () => {
+    const { activity } = await repos.activities.create({
+      accountId: ACC, activityType: "NOTE", body: "dup", occurredAt: "2026-08-23T01:00:00Z",
+      createdBy: OWNER, clientRequestId: rid(),
+    });
+    const first = await repos.suggestions.create({
+      activityId: activity.id as never, payload: basePayload(), confidence: 0.8,
+    });
+    const second = await repos.suggestions.create({
+      activityId: activity.id as never, payload: basePayload(), confidence: 0.8,
+    });
+    expect(second.id).toBe(first.id);
+    const pending = await repos.suggestions.listPendingByAccount(ACC, 50);
+    expect(pending.filter((x) => x.activityId === activity.id)).toHaveLength(1);
   });
 
   it("a deduped retry does not enqueue a second analysis", async () => {
@@ -241,6 +269,11 @@ describe("acceptance path — atomic + idempotent", () => {
 
     const tasks = await repos.tasks.listByAccount(ACC, 100);
     expect(tasks.filter((t) => t.title === "ส่งใบเสนอราคา")).toHaveLength(1);
+
+    // Mock/D1 contract parity (P1): validated solutions attach to the
+    // created moment; hallucinated ids never do.
+    expect(created.recommendedSolutionIds).toContain(realSolution);
+    expect(created.recommendedSolutionIds).not.toContain("SOL-FAKE-999");
   });
 
   it("IGNORED suggestions can never create dependent records", async () => {

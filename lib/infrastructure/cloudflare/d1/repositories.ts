@@ -35,7 +35,11 @@ import type {
 } from "@/lib/types";
 import { WHITESPACE_CATEGORIES } from "@/lib/domain/account";
 import { ACTIVE_MOMENT_STATUSES } from "@/lib/domain/moment";
-import { followUpTaskKey, suggestionTaskKey } from "@/lib/domain/activity";
+import {
+  ANALYZABLE_ACTIVITY_TYPES,
+  followUpTaskKey,
+  suggestionTaskKey,
+} from "@/lib/domain/activity";
 import type {
   AccountRepository,
   AccountSearchInput,
@@ -1082,6 +1086,7 @@ function mapActivity(r: Row): Activity {
     updatedAt: r.updated_at,
     metadata: r.metadata_json ? JSON.parse(r.metadata_json) : null,
     deletedAt: r.deleted_at ?? null,
+    analysisStatus: r.analysis_status ?? null,
   };
 }
 
@@ -1151,13 +1156,22 @@ function activityInsertStatement(
   input: CreateActivityInput,
   now: string,
 ): D1PreparedStatement {
+  // Durable dispatch (Step-6 P0): the outbox record IS part of the activity
+  // row, so it commits in the same batch as the write — analysis can always
+  // be recovered even if the enqueue attempt later fails.
+  const analysisStatus = (ANALYZABLE_ACTIVITY_TYPES as readonly string[]).includes(
+    input.activityType,
+  )
+    ? "PENDING"
+    : null;
   return db
     .prepare(
       `INSERT OR IGNORE INTO activities (
          id, organization_id, account_id, contact_id, opportunity_id, moment_event_id,
          activity_type, title, body, outcome, next_action, next_action_at,
-         occurred_at, created_by, created_at, updated_at, metadata_json, client_request_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         occurred_at, created_by, created_at, updated_at, metadata_json,
+         client_request_id, analysis_status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id, ORG, input.accountId, input.contactId ?? null, input.opportunityId ?? null,
@@ -1165,7 +1179,7 @@ function activityInsertStatement(
       input.body ?? null, input.outcome ?? null, input.nextAction ?? null,
       input.nextActionAt ?? null, input.occurredAt, input.createdBy, now, now,
       input.metadata ? JSON.stringify(input.metadata) : null,
-      input.clientRequestId ?? null,
+      input.clientRequestId ?? null, analysisStatus,
     );
 }
 
@@ -1402,6 +1416,23 @@ class D1ActivityRepository implements ActivityRepository {
       for (const r of res.results) out.set(r.opportunity_id, r.last_at);
     }
     return out;
+  }
+
+  async markAnalysisStatus(
+    ids: ActivityId[],
+    status: "QUEUED" | "PROCESSED",
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    const now = new Date().toISOString();
+    for (const chunk of chunked(ids)) {
+      await this.db
+        .prepare(
+          `UPDATE activities SET analysis_status = ?, updated_at = ?
+           WHERE organization_id = ? AND id IN (${inClause(chunk.length)})`,
+        )
+        .bind(status, now, ORG, ...chunk)
+        .run();
+    }
   }
 }
 

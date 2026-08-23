@@ -46,13 +46,18 @@ export async function createNote(
     },
     followUpTask: buildFollowUpTask({ ...input, accountId }, input.createdBy),
   });
-  // Async AI enrichment (Step 6): fire-and-forget after the committed
-  // write — enqueue failure can never fail the save (spec §55).
+  // Async AI enrichment (Step 6): the activity row itself carries a durable
+  // PENDING outbox record (written in the same batch as the save). A
+  // successful enqueue marks it QUEUED; a failed one stays PENDING for the
+  // cron reconciler — the save can never fail because of this (spec §55).
   if (!result.deduped) {
-    await enqueueActivityAnalysis({
+    const sent = await enqueueActivityAnalysis({
       accountId,
       activityId: result.activity.id,
     });
+    if (sent) {
+      await repos.activities.markAnalysisStatus([result.activity.id], "QUEUED");
+    }
   }
   return result;
 }

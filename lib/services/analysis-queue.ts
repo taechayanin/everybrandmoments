@@ -17,10 +17,12 @@ export function __setAnalysisQueueSinkForTests(sink: Sink | null): void {
   testSink = sink;
 }
 
+/** @returns true when the job reached the queue — the caller marks the
+ * outbox QUEUED; false leaves it PENDING for the cron reconciler. */
 export async function enqueueActivityAnalysis(input: {
   accountId: string;
   activityId: string;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const job = JobSchema.parse({
       jobType: "ANALYZE_ACTIVITY",
@@ -30,17 +32,18 @@ export async function enqueueActivityAnalysis(input: {
     });
     if (testSink) {
       await testSink(job);
-      return;
+      return true;
     }
     const { getBindings } = await import("@/lib/infrastructure/cloudflare/env");
     const env = await getBindings();
     if (env.MOMENT_JOBS) {
       await env.MOMENT_JOBS.send(job);
-    } else {
-      console.warn(
-        JSON.stringify({ event: "analysis_enqueue_skipped", reason: "no_queue_binding" }),
-      );
+      return true;
     }
+    console.warn(
+      JSON.stringify({ event: "analysis_enqueue_skipped", reason: "no_queue_binding" }),
+    );
+    return false;
   } catch (err) {
     console.error(
       JSON.stringify({
@@ -49,5 +52,6 @@ export async function enqueueActivityAnalysis(input: {
         error: err instanceof Error ? err.message : String(err),
       }),
     );
+    return false;
   }
 }
