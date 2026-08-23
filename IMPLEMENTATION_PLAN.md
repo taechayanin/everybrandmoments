@@ -9,6 +9,8 @@ Rev 2 changes: docs paths fixed (§refs above), Figma section added, Account 360
 
 Rev 3 changes (review round 2): contacts organization_id derived from owning account via JOIN (no hardcoded ORG-001, fail-loud on orphans), tasks table rebuilt with full FK set + fail-loud status normalization (no silent OPEN fallback), DB CHECK constraints added for all new CRM enums/ranges, Step-6 AI acceptance clarified as ONE atomic write abstraction (guard + moment + task + audit in a single batch, never a separately-committed guard).
 
+Rev 4 changes (review round 3): tasks get `client_request_id` + partial unique index with stable key scheme (`ACTIVITY:<id>:FOLLOWUP`, `SUG:<id>`), acceptAtomic dependent writes made conditional via `INSERT ... SELECT ... WHERE EXISTS (suggestion ACCEPTED)` with idempotent audit (IGNORED never writes), explicit pre-remote orphan-FK checks for every legacy tasks reference column.
+
 ---
 
 ## Goal
@@ -55,7 +57,10 @@ export interface InteractionWriteRepository {
    * Atomically persist one logged interaction:
    * activity + optional follow-up task + optional audit row.
    * D1: single db.batch(); mock: synchronous in-memory apply.
-   * Idempotent on (organization_id, client_request_id).
+   * Idempotent on (organization_id, client_request_id) ทั้งสอง table:
+   *   activity.client_request_id = <formRequestId>
+   *   task.client_request_id     = "ACTIVITY:<formRequestId>:FOLLOWUP"
+   * retry/double-click จึง no-op ทั้งคู่พร้อมกันเสมอ (rev 4).
    */
   logInteraction(input: {
     activity: CreateActivityInput;
@@ -133,10 +138,19 @@ Legacy `tasks` มี relationship id ครบแต่มี FK แค่ orga
      priority TEXT NOT NULL DEFAULT 'NORMAL' CHECK (priority IN ('LOW','NORMAL','HIGH','URGENT')),
      status TEXT NOT NULL CHECK (status IN ('OPEN','IN_PROGRESS','DONE','CANCELLED')),
      completed_at TEXT,
+     client_request_id TEXT,   -- idempotency (rev 4): stable key per logical create
      created_at TEXT NOT NULL,
      updated_at TEXT NOT NULL
    );
+   CREATE UNIQUE INDEX uq_tasks_client_request
+     ON tasks_new(organization_id, client_request_id)
+     WHERE client_request_id IS NOT NULL;
    ```
+   **Stable key scheme** (ใช้ตรงกันทุกชั้น):
+   - Follow-up จาก interaction: `ACTIVITY:<activityClientRequestId>:FOLLOWUP`
+   - Follow-up จาก AI suggestion: `SUG:<suggestionId>`
+   - Task สร้างมือจาก UI: `client_request_id` จาก form (crypto.randomUUID ตอน mount)
+   - Legacy rows ที่ copy มา: NULL (ไม่ต้องมี key)
 2. Copy + normalize status แบบ **fail-loud — ไม่ map ค่าที่ไม่รู้จักเป็น OPEN เงียบ ๆ**:
    ```sql
    INSERT INTO tasks_new (id, organization_id, account_id, moment_event_id, opportunity_id,
@@ -183,10 +197,15 @@ zod enum ทุกตัว derive จาก const array เดียวใน `
 4. CREATE `activity_ai_suggestions` (พร้อม CHECK status/confidence) + index
 5. Seed generator: activities ตัวอย่าง, contacts schema ใหม่ (มี buying_role ตัวอย่าง), tasks status uppercase, CLEAR_ORDER เพิ่ม activity_ai_suggestions → activities ก่อน contacts/accounts
 
-Pre-remote-apply checks (fail → หยุดรายงาน ไม่แก้เอง):
-- orphan contacts: `SELECT COUNT(*) FROM contacts c LEFT JOIN accounts a ON a.id=c.account_id WHERE a.id IS NULL` = 0
-- unknown task status: `SELECT DISTINCT status FROM tasks WHERE lower(status) NOT IN ('open','in_progress','done','cancelled')` = 0 แถว
-(ใน migration เอง กลไก LEFT JOIN→NOT NULL และ CASE ELSE NULL→CHECK ทำให้ apply ล้มเหลวดัง ๆ อยู่ดีถ้าข้อมูลหลุด check)
+Pre-remote-apply checks — ทุกข้อต้องคืน **0 แถว**; ถ้าพบ orphan/unknown: **STOP & REPORT** ไม่เดา ไม่ลบ ไม่ remap เอง:
+- orphan contacts→accounts: `SELECT c.id FROM contacts c LEFT JOIN accounts a ON a.id=c.account_id WHERE a.id IS NULL`
+- unknown task status: `SELECT id, status FROM tasks WHERE lower(status) NOT IN ('open','in_progress','done','cancelled')`
+- orphan task FKs (rev 4 — legacy tasks ไม่เคยมี FK พวกนี้ ต้องตรวจก่อน rebuild):
+  - `SELECT t.id FROM tasks t LEFT JOIN accounts a ON a.id=t.account_id WHERE t.account_id IS NOT NULL AND a.id IS NULL`
+  - `SELECT t.id FROM tasks t LEFT JOIN moment_events m ON m.id=t.moment_event_id WHERE t.moment_event_id IS NOT NULL AND m.id IS NULL`
+  - `SELECT t.id FROM tasks t LEFT JOIN opportunities o ON o.id=t.opportunity_id WHERE t.opportunity_id IS NOT NULL AND o.id IS NULL`
+  - `SELECT t.id FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id WHERE t.assignee_id IS NOT NULL AND u.id IS NULL`
+(ใน migration เอง กลไก LEFT JOIN→NOT NULL, CASE ELSE NULL→CHECK และ FK enforcement ตอน INSERT ทำให้ apply ล้มเหลวดัง ๆ อยู่ดีถ้าข้อมูลหลุด check — pre-check มีไว้ให้รู้ก่อนและรายงาน reviewer แทนที่จะไปตายกลาง migration)
 
 Migration ต้องผ่าน review ก่อน apply remote (Workflow Rule 6) — จะ apply local เพื่อทดสอบเท่านั้นใน Step 1
 
@@ -216,25 +235,38 @@ Migration ต้องผ่าน review ก่อน apply remote (Workflow Ru
 // lib/repositories — atomic decision unit-of-work (Step 6)
 export interface SuggestionDecisionWriteRepository {
   /**
-   * ONE db.batch() (atomic in D1):
-   *   [ guarded UPDATE suggestion SET ACCEPTED WHERE status='PENDING',
-   *     INSERT OR IGNORE moment (dedupe_key = SUGGESTION:{org}:{acc}:{code}:{suggestionId}),
-   *     INSERT OR IGNORE follow-up task (client_request_id = SUG:{suggestionId}),
-   *     INSERT audit ]
-   * All-or-nothing: batch fail => ทุก statement rollback, suggestion ยัง PENDING.
+   * ONE db.batch() (atomic in D1). Dependent writes are CONDITIONAL on the
+   * suggestion actually being ACCEPTED — never unconditional after the guard:
+   *   [ UPDATE activity_ai_suggestions SET status='ACCEPTED', decided_at=?, decided_by=?
+   *       WHERE organization_id=? AND id=? AND status='PENDING',
+   *     INSERT OR IGNORE INTO moment_events (...)
+   *       SELECT ... WHERE EXISTS (SELECT 1 FROM activity_ai_suggestions
+   *                                WHERE organization_id=? AND id=? AND status='ACCEPTED'),
+   *     INSERT OR IGNORE INTO tasks (...)
+   *       SELECT ... WHERE EXISTS (…status='ACCEPTED'…),
+   *     INSERT OR IGNORE INTO audit_logs (id = 'AUD:SUG:'||?, ...)
+   *       SELECT ... WHERE EXISTS (…status='ACCEPTED'…) ]
+   * All-or-nothing: batch fail => rollback ทั้งก้อน, suggestion ยัง PENDING.
    */
   acceptAtomic(input: AcceptSuggestionInput): Promise<AcceptOutcome>;
   ignoreAtomic(id: SuggestionId, userId: UserId): Promise<{ changed: boolean }>;
 }
 ```
 
+Required behavior (rev 4 — review round 3 item 2):
+
+| สถานะตอนเรียก accept | ผล |
+|---|---|
+| PENDING | UPDATE → ACCEPTED; `WHERE EXISTS(status='ACCEPTED')` เป็นจริง → สร้าง Moment/Task/Audit (idempotent ทุกแถว) |
+| ACCEPTED (retry/double-click) | UPDATE เปลี่ยน 0 แถว; EXISTS ยังจริง แต่ทุก INSERT เป็น `OR IGNORE` + stable key → **ไม่ duplicate**; คืนผลเดิม |
+| IGNORED | UPDATE เปลี่ยน 0 แถว; `EXISTS(status='ACCEPTED')` เป็น**เท็จ** → SELECT คืน 0 แถว → **ไม่มี Moment/Task/Audit เกิดขึ้นเลย** |
+
 Flow ของ use case:
 1. อ่าน suggestion + validate momentCode กับ active Master Moment catalog ผ่าน repository (**ไม่ hardcode list** — reviewer decision) และ validate solutionIds กับ catalog
-2. เรียก `acceptAtomic` — batch เดียวตามคอมเมนต์ข้างบน
-3. อ่านผลหลัง batch: ถ้า guarded UPDATE เปลี่ยน 0 แถว (ถูก accept/ignore ไปแล้ว) → dependent INSERTs ถูก `OR IGNORE` โดย unique keys อยู่แล้ว → คืนผลลัพธ์เดิมจากการ accept ครั้งแรก (**double-click/retry = no-op**)
-4. Idempotency สองชั้นเสมอ: (a) guard `status='PENDING'` (b) unique keys ระดับแถว — `moment_events.dedupe_key` (unique index เดิม) และ `client_request_id` unique — ต่อให้ race ผ่าน guard ได้ DB ก็กันซ้ำ
+2. เรียก `acceptAtomic` — batch เดียว, dependent writes ทุกตัวเป็น `INSERT ... SELECT ... WHERE EXISTS (suggestion ACCEPTED)` — statement condition อยู่ใน SQL เอง ไม่พึ่ง control flow ฝั่ง JS
+3. อ่านผลหลัง batch (meta.changes ของ guard + SELECT ผลลัพธ์) → รายงาน created / already-accepted / ignored ให้ UI
+4. Idempotency ระดับแถว: `moment_events.dedupe_key = SUGGESTION:{org}:{acc}:{code}:{suggestionId}` (unique index เดิม), `tasks.client_request_id = SUG:{suggestionId}` (uq_tasks_client_request), `audit_logs.id = 'AUD:SUG:{suggestionId}'` (PK — deterministic id ทำให้ audit idempotent ด้วย `INSERT OR IGNORE`)
 
-หมายเหตุ D1: `db.batch()` เป็น implicit transaction (all-or-nothing) แต่ statement หลัง guard ไม่รู้ผลของ guard — ความถูกต้องจึงอิง unique keys ตามข้อ 4 ไม่ใช่ control flow; นี่คือเหตุที่ทุก dependent INSERT ต้องเป็น `INSERT OR IGNORE` + key ที่ derive จาก suggestionId เท่านั้น (ไม่มี random id ใน key path)
 **Plan clarification เท่านั้น — ยังไม่ implement Step 6**
 
 ## UI / UX Changes
