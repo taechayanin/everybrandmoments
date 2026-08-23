@@ -1,92 +1,72 @@
 # REVIEW PACKET
 
 ## Step
-Step 2 — CRM Activity Layer: Repositories (interfaces + mock + D1 adapters + tests)
+Step 3 — CRM Activity Layer: Application Use Cases + Server Actions
 
 ## Goal
-วาง data-access layer ของ CRM ตาม IMPLEMENTATION_PLAN.md (rev 4, approved): Activity/Task/Contact/Suggestion repositories + `InteractionWriteRepository` unit-of-work — **ยังไม่มี use case / server action / UI (Step 3–4)**
+Business rules ทั้งหมดของ CRM interaction อยู่ที่ application layer ตาม IMPLEMENTATION_PLAN.md (rev 4) + reviewer requirements 9 ข้อ — **ยังไม่มี UI (Step 4), ไม่มี AI (Step 6), ไม่ deploy**
 
 ## Commit
-`8a460ec`
+`1dfc537`
 
 ## Files Changed
-- `lib/repositories/index.ts` — interfaces ใหม่ 5 ชุด + input types + `Repositories` เพิ่ม `activities/tasks/contacts/suggestions/interactions`
-- `lib/infrastructure/cloudflare/d1/repositories.ts` — D1 adapters ทั้ง 5 + row mappers + shared insert-statement helpers
-- `lib/infrastructure/mock/repositories.ts` — mock adapters ทั้ง 5 (mirror semantics เดียวกัน; contacts seed จาก embedded account data ตรงกับ id ใน seed.sql)
-- `lib/domain/activity.ts` — เพิ่ม `CrmContact`, `ActivitySuggestion` entities
-- `lib/types.ts` — barrel export `domain/activity`
-- `tests/crm-repositories.test.ts` (ใหม่) — 11 เทสต์
+- `lib/application/activities/shared.ts` (ใหม่) — `CrmError`, `assertInteractionOwnership` (cross-entity same-account), `validateNextState`, `buildFollowUpTask`
+- `lib/application/activities/create-note.ts` / `log-call.ts` / `log-meeting.ts` (ใหม่) — 3 interaction use cases ผ่าน `InteractionWriteRepository`
+- `lib/application/activities/get-account-timeline.ts` (ใหม่) — keyset page + batch contact hydration
+- `lib/application/activities/update-activity.ts` (ใหม่) — update + soft delete (system rows immutable)
+- `lib/application/contacts/create-contact.ts` (ใหม่) — create + update contact
+- `lib/application/tasks/create-follow-up.ts` (ใหม่) — create follow-up (derive account จาก refs) + completeTask
+- `lib/application/tasks/get-my-work-today.ts` (ใหม่) — 3 band queries
+- `app/accounts/[id]/actions.ts` (ใหม่) — 9 server actions: gate → zod strict → use case → revalidate
+- `lib/domain/activity.ts` — เพิ่ม `INTERACTION_NEXT_STATES` (6 ค่า)
+- `lib/contracts/crm.ts` — เพิ่ม `createFollowUp` + `nextState` ใน note/call/meeting; task priority เป็น optional (repo default NORMAL)
+- `tests/crm-usecases.test.ts` (ใหม่) — 13 เทสต์
 
-## Architecture Changes
-ตาม layer เดิม — จุดที่ต้องรีวิว: **`InteractionWriteRepository`** (plan rev 2 item 4) แยก unit-of-work ออกจาก entity repository:
-- `ActivityRepository`/`TaskRepository` = CRUD ของ entity ตัวเองล้วน ๆ ไม่แตะข้าม table
-- `D1InteractionWriteRepository.logInteraction()` ประกอบ statement จาก helper ที่ใช้ร่วมกับ repo ปกติ → ยิง **`db.batch()` เดียว**: activity INSERT OR IGNORE + follow-up task INSERT OR IGNORE (key `ACTIVITY:<requestId>:FOLLOWUP`) + audit INSERT OR IGNORE (deterministic id `AUD-ACT-<requestId>`) → read-back survivor ด้วย unique key → `deduped` flag
-- โยน error ถ้าไม่มี `clientRequestId` (unit ทั้งหมด key จากมัน)
+## USE CASES IMPLEMENTED
+createNote, logCall, logMeeting, getAccountTimeline, updateActivity, deleteActivity (soft), createContact, updateContact, createFollowUp, completeTask, getMyWorkToday — ครบตามแผน Step 3 ไม่มีเกิน
 
-## Database / Migration
-ไม่มี migration ใหม่ — ใช้ 0004 จาก Step 1 (ยังไม่ apply remote)
+## BUSINESS RULES
+- **Layering (req 1):** UI/action → use case → repo interface → adapter; actions ไม่แตะ repository ตรง, repositories ยังเป็น persistence ล้วน
+- **Cross-entity ownership (req 2):** contact / decisionMakerContact / opportunity / momentEvent ทุกตัวต้อง (a) resolve ได้ใน org (repos org-scoped → ต่าง org = null) และ (b) `entity.accountId === interaction.accountId`; follow-up task ที่ไม่ระบุ account จะ derive จาก ref แล้วบังคับกฎเดียวกัน
+- **Next state (req 5):** `INTERACTION_NEXT_STATES = FOLLOW_UP | WAITING_CUSTOMER | PROPOSAL | NURTURE | CLOSED | NO_ACTION` — optional field บน note/call/meeting เก็บใน `metadata_json`; กฎเดียว: FOLLOW_UP (หรือปุ่ม Save+Follow-up) ต้องมี nextAction — ไม่ overbuild workflow engine
+- **System rows immutable:** update/delete ได้เฉพาะ NOTE/CALL/MEETING/EMAIL/LINE/VISIT
+- **AI (req 4):** ไม่มี AI call ใน path ไหนเลย — enrichment เป็น async job ของ Step 6
 
-## Repository / Use Case Changes
-- `ActivityRepository`: getById, **listByAccount (keyset `occurred_at DESC, id DESC`, default 20, filter by types, ไม่เห็น soft-deleted)**, listRecentByAccounts (ROW_NUMBER OVER PARTITION — 1 query/chunk ≤50), create (idempotent), update, softDelete (guarded `deleted_at IS NULL`), lastActivityByOpportunities (GROUP BY MAX — spec §27)
-- `TaskRepository`: create (idempotent), complete (guarded `status IN (OPEN,IN_PROGRESS)` → idempotent), listByAssignee (overdue/today/upcoming — `today` มาจาก clock ของ caller), listByAccount, listByOpportunity
-- `ContactRepository`: getById/getByIds (chunked)/listByAccount (primary-first)/create/update
-- `SuggestionRepository`: getById/create/listPendingByAccount (JOIN activities เพื่อ scope account — table ไม่มี account_id ตรง)
-- ทุก query scope `organization_id = ?`
+## SECURITY / ORG SCOPING
+- Server actions ทุกตัว: `writesEnabled()` gate → zod `.strict()` parse (unknown field ปฏิเสธ) → actor = `DEMO_USER` inject ฝั่ง server (client ส่ง createdBy เองไม่ได้)
+- Org isolation: entity ของ org อื่นมองไม่เห็นผ่าน repo (ทุก query bind org) → ที่ application layer เท่ากับ "ไม่พบ" → reject; มีเทสต์
+- Error ต่อ user: `CrmError` message เท่านั้น; error ภายใน log ฝั่ง server + คืนข้อความ generic
 
-## API / Server Actions
-ไม่มี (Step 3)
+## IDEMPOTENCY (req 3)
+Interaction ทั้งก้อน idempotent บน `clientRequestId`: retry เดิมให้ Activity=1, Task=1 (key `ACTIVITY:<id>:FOLLOWUP`), Audit=1 (deterministic id) — พิสูจน์ด้วยเทสต์ application-level (สร้างซ้ำ → id เดิมทั้ง activity และ task, timeline มี 1 แถว); completeTask idempotent (`changed=false` รอบสอง)
 
-## UI / UX
-ไม่มี (Step 4)
+## QUERY / PERFORMANCE IMPACT (req 8)
+- createNote/logCall/logMeeting: ownership checks ≤4 bounded getById + 1 `db.batch()` write — ไม่มี loop
+- getAccountTimeline: 1 keyset query + 1 chunked `getByIds` ต่อหน้า (ไม่ per-activity)
+- getMyWorkToday: 3 bounded queries (LIMIT 20/band) ขนานกัน
+- ไม่มี N+1 ใหม่; ไม่แตะ query เดิมของหน้าอื่น
 
-## Figma Comparison
-N/A — ไม่มี UI ใน step นี้; Figma link ยังเป็น open item ก่อน Step 4
+## TESTS
+79/79 passing (10 files) — Step 3 เพิ่ม 13: note/call/meeting success, follow-up creation (title/dueDate/assignee), **idempotent repeat = 1 activity + 1 task**, FOLLOW_UP ไร้ nextAction → reject, cross-account contact reject, cross-account opportunity reject, org isolation (account + ref), timeline pagination 23 แถว 2 หน้าผ่าน use case พร้อม contact hydration, task account derivation จาก opportunity, my-work-today boundary (เทียบกับ clock เดียวกับ use case), complete missing task
 
-## Security
-- Organization Scope: ทุก SELECT/UPDATE/INSERT ใน adapters ใหม่ bind `ORG`; suggestions JOIN ตรวจ `a.organization_id = s.organization_id`
-- Validation: repositories รับ typed inputs — zod strict อยู่ที่ boundary (Step 3 server actions)
-- Write Gate: ยังไม่แตะ (Step 3)
-- Soft delete guard กัน double-delete; complete guard กันข้าม state
-
-## Performance
-- Timeline: 1 keyset query (LIMIT n+1, ไม่มี OFFSET) — ตรงเป้า spec §24/§53
-- listRecentByAccounts: window function 1 query ต่อ chunk ≤50 — ไม่ loop ต่อ account
-- lastActivityByOpportunities: GROUP BY 1 query ต่อ chunk
-- ไม่มี N+1 ใหม่; ไม่มี unbounded query ใหม่
-
-## Tests Added
-`tests/crm-repositories.test.ts` — 11 เทสต์: activity create idempotency, keyset 25 แถว 2 หน้า (ไม่ overlap, DESC order ตรวจทุกคู่), type filter + soft delete, lastActivity max ต่อ opportunity, **logInteraction unit idempotency (activity+task คู่กัน, replay → deduped + id เดิมทั้งคู่)**, missing clientRequestId → throw, task complete idempotent, due bands แยกถูก, contacts seed primary-first + DECISION_MAKER, contact create/update round-trip, suggestions PENDING scope ต่อ account
-
-## Test Results
-66 / 66 passing (9 files)
-
-## Typecheck
+## TYPECHECK
 PASS
 
-## Lint
+## LINT
 PASS
 
-## Build
+## BUILD
 PASS
 
-## D1 Verification (local, executed)
-- ROW_NUMBER OVER (PARTITION BY) รันได้จริงบน D1 local — คืน rn=1 ต่อ account ถูกต้อง
-- Unique index `uq_activities_client_request` dedupe จริง: INSERT 2 แถว key เดียว → survivor 1 แถว
-- (production incident ก่อนหน้า resolve แล้ว: root cause = Secret-Change version; redeploy แล้ว ทุก route 200)
+## DEVIATIONS FROM PLAN
+- `CreateTaskSchema.priority` เปลี่ยนจาก `.default("NORMAL")` เป็น `.optional()` (default อยู่ที่ repository) — พฤติกรรมเท่ากัน, type ของ caller สะอาดกว่า
+- Server actions รวมเป็นไฟล์เดียว `app/accounts/[id]/actions.ts` (แผนเขียนเป็นรายชื่อ action ไม่ได้กำหนดไฟล์) — Step 4 UI mount จากหน้านี้
+- `updateActivity`/`deleteActivity` ใช้ `UpdateActivityCommand` ภายใน (activityId แยกจาก patch) — สอดคล้อง contract `UpdateActivitySchema`
 
-## Known Limitations
-- Mock `listRecentByAccounts` loop ต่อ account ใน memory (semantics เท่ากัน; D1 ใช้ window function)
-- Contact create ไม่มี client_request_id dedupe (table ไม่มีคอลัมน์ — ตามแผน; double-submit contact เป็น edge ที่ Step 3 ป้องกันที่ form)
-- `InteractionWriteRepository` ยังไม่ถูกเรียกจากที่ไหน (Step 3)
+## KNOWN RISKS
+- `DEMO_USER` ยังเป็น actor ทุก write จนกว่า Sprint 7 auth — mitigated ด้วย Cloudflare Access (ยังต้องเปิดใน dashboard) + `MOMENT_OS_WRITES` gate
+- Contact create ไม่มี DB-level idempotency (ไม่มีคอลัมน์ตามแผน) — double-submit กันที่ form ใน Step 4
+- Server actions ยังไม่ถูกเรียกจาก UI (Step 4) — build ตรวจแล้วว่า compile ผ่านใน app tree จริง
 
-## Decisions / Trade-offs
-- `lastActivityByOpportunities` วางบน `ActivityRepository` (data อยู่ table activities) แทน `OpportunityRepository` ตามตัวอักษรของแผน — พฤติกรรม/จำนวน query เท่ากัน แจ้งเป็น deviation ให้ตัดสิน
-- Audit id ใช้ `AUD-ACT-<requestId>` (idempotent ผ่าน PK) — สอดคล้อง pattern `AUD:SUG:` ที่วางไว้สำหรับ Step 6
-
-## Things Reviewer Should Check Carefully
-1. `logInteraction`: batch มี guard เฉพาะ unique keys (ไม่มี WHERE EXISTS ข้าม statement) — เพียงพอสำหรับเคสนี้เพราะทุก statement เป็น INSERT OR IGNORE ที่ key จาก requestId เดียวกัน (ไม่มีเงื่อนไขสถานะแบบ suggestion accept)
-2. Keyset cursor เป็น plain `occurredAt|id` (ไม่ encode) — client จะเห็นค่า; ยอมรับได้ไหมหรืออยากให้ base64
-3. `listByAssignee` ตัด task ที่ `due_date IS NULL` ออกทุก band — ตีความจาก spec §18; ถูกต้องตามที่ตั้งใจไหม
-
-## Next Proposed Step
-Step 3 — Use Cases + Server Actions (create-note/log-call/log-meeting/create-follow-up/contacts/get-account-timeline/get-my-work-today + write gate + zod + idempotency wiring) — รอ `REVIEW APPROVED — PROCEED`
+## NEXT PROPOSED STEP
+Step 4 — Account 360 UI (header + quick actions + timeline + composer + contacts panel) — **บล็อกด้วย Figma URL ที่ยังรอทีมส่ง** (open item เดียวของแผน); รอ `REVIEW APPROVED — PROCEED`
