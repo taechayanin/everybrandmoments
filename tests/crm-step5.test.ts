@@ -159,6 +159,58 @@ describe("Opportunity activity integration", () => {
   });
 });
 
+describe("Zero-activity no-contact risk (Step-5 fix 2)", () => {
+  const NOW = new Date("2026-08-22T00:00:00Z");
+  const daysAgo = (n: number) =>
+    new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+  it("canonical rule covers all five reviewer cases", async () => {
+    const { isOpportunityAtRisk, daysSinceOpportunityContact } = await import(
+      "@/lib/domain/opportunity"
+    );
+    // zero activity + 2 days -> not at risk
+    expect(isOpportunityAtRisk("Discovery", null, daysAgo(2), NOW)).toBe(false);
+    // zero activity + 10 days -> at risk (falls back to created_at)
+    expect(isOpportunityAtRisk("Discovery", null, daysAgo(10), NOW)).toBe(true);
+    // activity yesterday -> not at risk
+    expect(isOpportunityAtRisk("Proposal", daysAgo(1), daysAgo(30), NOW)).toBe(false);
+    // activity 8 days ago -> at risk
+    expect(isOpportunityAtRisk("Proposal", daysAgo(8), daysAgo(30), NOW)).toBe(true);
+    // closed opportunities excluded
+    expect(isOpportunityAtRisk("Won", daysAgo(30), daysAgo(60), NOW)).toBe(false);
+    expect(isOpportunityAtRisk("Lost", null, daysAgo(60), NOW)).toBe(false);
+    // exact boundary: 7 full days = at risk
+    expect(isOpportunityAtRisk("Discovery", daysAgo(7), daysAgo(30), NOW)).toBe(true);
+    expect(daysSinceOpportunityContact(null, daysAgo(10), NOW)).toBe(10);
+  });
+
+  it("counter and per-row display share the rule through the queue view", async () => {
+    const won = await repos.opportunities.create({
+      momentEventId: "ME-2026-000001" as MomentEventId,
+      accountId: "ACC-001" as AccountId,
+      name: "closed won — no risk",
+      expectedRevenue: 100,
+      expectedGP: 0.4,
+      closeDate: "2026-08-01",
+      stage: "Won",
+      ownerId: OWNER,
+      nextAction: "-",
+    });
+    const view = await getOpportunityQueue();
+    // mock opportunities were created 2026-08-01 (21 days before the pinned
+    // clock) — every open row without activity must be at risk, and the
+    // counter equals the rows flagged at risk.
+    const wonRow = view.rows.find((r) => r.opportunity.id === won.id);
+    expect(wonRow?.atRisk).toBe(false);
+    const zeroActivityOld = view.rows.find(
+      (r) => r.lastActivityAt === null && r.opportunity.stage === "Solution Design",
+    );
+    expect(zeroActivityOld?.atRisk).toBe(true);
+    expect(zeroActivityOld?.daysSinceContact).toBeGreaterThanOrEqual(7);
+    expect(view.atRiskCount).toBe(view.rows.filter((r) => r.atRisk).length);
+  });
+});
+
 describe("System moment activities", () => {
   async function freshMoment(accountId: AccountId): Promise<MomentEventId> {
     const event = await repos.moments.create({

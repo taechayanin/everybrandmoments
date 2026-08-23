@@ -4,8 +4,6 @@
 // index on (organization_id, dedupe_key) makes INSERT OR IGNORE race-safe —
 // closing an event early can never resurrect the same occurrence.
 
-import { momentActivityKey } from "../../../lib/domain/activity";
-
 const ORG = "ORG-001";
 
 async function createRuleEvent(
@@ -25,44 +23,49 @@ async function createRuleEvent(
 ): Promise<boolean> {
   const now = new Date().toISOString();
   const eventId = `ME-${crypto.randomUUID()}`;
-  const res = await db
-    .prepare(
-      `INSERT OR IGNORE INTO moment_events (
-         id, organization_id, account_id, moment_code, sub_moment,
-         trigger_source, trigger_detail, detected_at, expected_event_date,
-         score_business_fit, score_intent, score_timing, score_wallet, score_relationship,
-         potential_wallet_min, potential_wallet_max,
-         recommended_action, status, next_expected_moment,
-         detection_confidence, detected_by, dedupe_key, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'Rule Engine', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'Detected', ?, 1.0, ?, ?, ?, ?)`,
-    )
-    .bind(
-      eventId, ORG, input.accountId, input.momentCode, input.subMoment,
-      input.detail, now.slice(0, 10), input.expectedEventDate,
-      ...input.scores,
-      input.action, input.momentCode, input.ruleId, input.dedupeKey, now, now,
-    )
-    .run();
-  const created = (res.meta.changes ?? 0) > 0;
-  if (created) {
-    // System timeline row (Step 5) — only when the occurrence was actually
-    // inserted, and keyed by the event id, so a repeated cron run (which
-    // skips the event insert) never duplicates the activity either.
-    await db
+  // ONE atomic batch (Step-5 review fix 1) that is also self-repairing: the
+  // activity INSERT..SELECT resolves the SURVIVING event by dedupe_key and
+  // derives its key from that event's id ('MOMENT-DETECTED:' || e.id — the
+  // SQL form of momentActivityKey). Invariant after any rerun/partial
+  // failure: occurrence = exactly 1 moment AND exactly 1 MOMENT_DETECTED
+  // activity — a rerun that skips the moment insert still repairs a missing
+  // activity, and OR IGNORE keeps an existing one unique.
+  const results = await db.batch([
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO moment_events (
+           id, organization_id, account_id, moment_code, sub_moment,
+           trigger_source, trigger_detail, detected_at, expected_event_date,
+           score_business_fit, score_intent, score_timing, score_wallet, score_relationship,
+           potential_wallet_min, potential_wallet_max,
+           recommended_action, status, next_expected_moment,
+           detection_confidence, detected_by, dedupe_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 'Rule Engine', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'Detected', ?, 1.0, ?, ?, ?, ?)`,
+      )
+      .bind(
+        eventId, ORG, input.accountId, input.momentCode, input.subMoment,
+        input.detail, now.slice(0, 10), input.expectedEventDate,
+        ...input.scores,
+        input.action, input.momentCode, input.ruleId, input.dedupeKey, now, now,
+      ),
+    db
       .prepare(
         `INSERT OR IGNORE INTO activities (
            id, organization_id, account_id, moment_event_id, activity_type,
            title, body, occurred_at, created_at, updated_at, client_request_id
-         ) VALUES (?, ?, ?, ?, 'MOMENT_DETECTED', ?, ?, ?, ?, ?, ?)`,
+         )
+         SELECT ?, e.organization_id, e.account_id, e.id, 'MOMENT_DETECTED',
+                ?, ?, e.created_at, ?, ?, 'MOMENT-DETECTED:' || e.id
+         FROM moment_events e
+         WHERE e.organization_id = ? AND e.dedupe_key = ?`,
       )
       .bind(
-        `ACT-${crypto.randomUUID()}`, ORG, input.accountId, eventId,
+        `ACT-${crypto.randomUUID()}`,
         `ตรวจพบ Moment — ${input.momentCode}`, input.subMoment,
-        now, now, now, momentActivityKey("DETECTED", eventId),
-      )
-      .run();
-  }
-  return created;
+        now, now, ORG, input.dedupeKey,
+      ),
+  ]);
+  return ((results[0]?.meta as { changes?: number })?.changes ?? 0) > 0;
 }
 
 /** RULE-RETURN-180: no order for ≥180 days → EBM Return (PRD §62). */

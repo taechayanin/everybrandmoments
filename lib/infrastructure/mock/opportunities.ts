@@ -3,6 +3,7 @@ import type { Appointment, Opportunity } from "@/lib/types";
 export const OPPORTUNITIES: Opportunity[] = [
   {
     id: "OPP-2026-001",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000001",
     accountId: "ACC-001",
     name: "ABC Clinic — Branch Expansion Kit สาขาบางแค",
@@ -16,6 +17,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-002",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000002",
     accountId: "ACC-002",
     name: "XYZ Retail — Flagship Grand Opening",
@@ -28,6 +30,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-003",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000004",
     accountId: "ACC-010",
     name: "Rung Ruang — Uniform + Welcome Kit Hub ขอนแก่น",
@@ -40,6 +43,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-004",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000006",
     accountId: "ACC-005",
     name: "Siam Dental — Anniversary 10 ปี Celebration",
@@ -52,6 +56,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-005",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000012",
     accountId: "ACC-020",
     name: "D-Design — Anniversary 5 ปี + Mini Rebrand",
@@ -64,6 +69,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-006",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000021",
     accountId: "ACC-002",
     name: "XYZ Retail — CNY Gift Set 2027 (Early Bird)",
@@ -76,6 +82,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-007",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000022",
     accountId: "ACC-010",
     name: "Rung Ruang — Welcome Kit 80 ชุด (ล็อตแรก)",
@@ -88,6 +95,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-008",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000023",
     accountId: "ACC-009",
     name: "Thara Spa — Amenity Reorder",
@@ -100,6 +108,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-009",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000010",
     accountId: "ACC-019",
     name: "TechServe — Employee Welcome Kit 40 ชุด",
@@ -112,6 +121,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-010",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000008",
     accountId: "ACC-008",
     name: "Mango Beauty — Launch Package สาขาแรก",
@@ -125,6 +135,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-011",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000024",
     accountId: "ACC-003",
     name: "CCC Tech — Townhall Kit Q3 (Delivered)",
@@ -137,6 +148,7 @@ export const OPPORTUNITIES: Opportunity[] = [
   },
   {
     id: "OPP-2026-012",
+    createdAt: "2026-08-01T02:00:00Z",
     momentEventId: "ME-2026-000050",
     accountId: "ACC-014",
     name: "K.Fresh — House Brand Packaging 20 SKU",

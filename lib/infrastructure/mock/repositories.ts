@@ -349,7 +349,7 @@ class MockOpportunityRepository implements OpportunityRepository {
 
   async create(input: CreateOpportunityInput): Promise<Opportunity> {
     const id = `OPP-2026-${String(opportunities.length + 1).padStart(3, "0")}` as OpportunityId;
-    const opp: Opportunity = { id, ...input };
+    const opp: Opportunity = { id, createdAt: new Date().toISOString(), ...input };
     opportunities.push(opp);
     return opp;
   }

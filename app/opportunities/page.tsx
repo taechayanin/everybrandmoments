@@ -30,6 +30,7 @@ export default async function OpportunityQueue() {
         <StatCard label="Pipeline Value" value={baht(view.pipelineValue)} accent="text-indigo-600" />
         <StatCard label="Expected GP" value={baht(Math.round(view.weightedGP))} accent="text-emerald-600" hint="ถ่วงน้ำหนักตาม GP Target" />
         <StatCard label="Proposal / Negotiation" value={view.inProposalOrNegotiation} accent="text-amber-600" />
+        <StatCard label="No-Contact ≥7 วัน" value={view.atRiskCount} accent="text-rose-600" hint="เสี่ยงตกหล่น — ติดตามด่วน" />
       </div>
 
       {/* Pipeline strip */}
@@ -74,7 +75,7 @@ export default async function OpportunityQueue() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {view.rows.map(({ opportunity: o, account: acc, event: e, ownerName, daysSinceLastActivity, nextFollowUp }) => {
+            {view.rows.map(({ opportunity: o, account: acc, event: e, ownerName, daysSinceLastActivity, daysSinceContact, atRisk, nextFollowUp }) => {
               const score = e ? totalScore(e.score) : 0;
               return (
                 <tr key={o.id} className="align-top hover:bg-slate-50/60">
@@ -103,21 +104,18 @@ export default async function OpportunityQueue() {
                   </td>
                   <td className="max-w-[220px] px-4 py-3 text-[11px] text-slate-600">{o.nextAction}</td>
                   <td className="max-w-[200px] px-4 py-3 text-[11px]">
-                    {daysSinceLastActivity === null ? (
-                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
-                        ยังไม่มี activity
-                      </span>
-                    ) : (
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                          daysSinceLastActivity >= 7
-                            ? "bg-rose-100 text-rose-700"
-                            : "bg-emerald-50 text-emerald-700"
-                        }`}
-                      >
-                        คุยล่าสุด {daysSinceLastActivity === 0 ? "วันนี้" : `${daysSinceLastActivity} วันก่อน`}
-                      </span>
-                    )}
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                        atRisk
+                          ? "bg-rose-100 text-rose-700"
+                          : "bg-emerald-50 text-emerald-700"
+                      }`}
+                    >
+                      {daysSinceLastActivity === null
+                        ? `ยังไม่มี activity · ${daysSinceContact} วัน`
+                        : `คุยล่าสุด ${daysSinceLastActivity === 0 ? "วันนี้" : `${daysSinceLastActivity} วันก่อน`}`}
+                      {atRisk ? " ⚠" : ""}
+                    </span>
                     {nextFollowUp && (
                       <p className="mt-1 text-[10px] text-amber-700">
                         ⏭ {nextFollowUp.title}

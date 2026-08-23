@@ -2,6 +2,10 @@ import type { Account, CrmTask, MomentEvent, Opportunity } from "@/lib/types";
 import { getRepositories } from "@/lib/infrastructure";
 import { totalScore } from "@/lib/domain/score";
 import { getClock } from "@/lib/services/clock";
+import {
+  daysSinceOpportunityContact,
+  isOpportunityAtRisk,
+} from "@/lib/domain/opportunity";
 
 export interface OpportunityRow {
   opportunity: Opportunity;
@@ -11,12 +15,19 @@ export interface OpportunityRow {
   /** Step 5 — CRM context from the activity layer (bulk reads, no N+1). */
   lastActivityAt: string | null;
   daysSinceLastActivity: number | null;
+  /** Days since last contact — falls back to opportunity creation when no
+   * activity exists (canonical no-contact rule, spec §27). */
+  daysSinceContact: number;
+  atRisk: boolean;
   nextFollowUp: CrmTask | null;
 }
 
 export interface OpportunityQueueView {
   rows: OpportunityRow[];
   openCount: number;
+  /** Open opportunities past the no-contact threshold (same canonical rule
+   * as the per-row display). */
+  atRiskCount: number;
   pipelineValue: number;
   weightedGP: number;
   inProposalOrNegotiation: number;
@@ -39,7 +50,8 @@ export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
     repos.activities.lastActivityByOpportunities(opportunityIds),
     repos.tasks.nextOpenTaskByOpportunities(opportunityIds),
   ]);
-  const now = getClock().now().getTime();
+  const clockNow = getClock().now();
+  const now = clockNow.getTime();
   const accountMap = new Map(accounts.map((a) => [a.id, a]));
   const eventMap = new Map(events.map((e) => [e.id, e]));
   const ownerMap = new Map(owners.map((u) => [u.id, u]));
@@ -61,6 +73,12 @@ export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
       daysSinceLastActivity: lastAt
         ? Math.max(0, Math.floor((now - new Date(lastAt).getTime()) / 86_400_000))
         : null,
+      daysSinceContact: daysSinceOpportunityContact(
+        lastAt, opportunity.createdAt, clockNow,
+      ),
+      atRisk: isOpportunityAtRisk(
+        opportunity.stage, lastAt, opportunity.createdAt, clockNow,
+      ),
       nextFollowUp: nextTasks.get(opportunity.id) ?? null,
     });
   }
@@ -74,6 +92,7 @@ export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
   return {
     rows,
     openCount: open.length,
+    atRiskCount: rows.filter((r) => r.atRisk).length,
     pipelineValue: open.reduce((s, r) => s + r.opportunity.expectedRevenue, 0),
     weightedGP: open.reduce(
       (s, r) => s + r.opportunity.expectedRevenue * r.opportunity.expectedGP,

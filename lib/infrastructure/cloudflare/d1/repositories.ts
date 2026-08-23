@@ -227,6 +227,7 @@ function mapOpportunity(r: Row): Opportunity {
     nextAction: r.next_action ?? "",
     slaHours: r.sla_hours ?? undefined,
     channel: (r.channel ?? undefined) as Channel | undefined,
+    createdAt: r.created_at,
   };
 }
 
