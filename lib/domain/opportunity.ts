@@ -170,6 +170,163 @@ export function legacyStageToStatusStage(legacy: string): {
  * "no reason recorded", never a fabricated business reason. */
 export const LEGACY_LOST_REASON = "legacy: ไม่ได้บันทึกเหตุผล (ข้อมูลเก่า)";
 
+// ---------- Lifecycle transitions (Step 3 — canonical, single source) ----------
+
+/** Status transitions (plan §1): DRAFT→ACTIVE via the activation gate;
+ * ACTIVE closes to WON/LOST; CANCELLED from DRAFT or ACTIVE; terminals stay. */
+export function canTransitionStatus(
+  from: ProjectStatus,
+  to: ProjectStatus,
+): boolean {
+  switch (from) {
+    case "DRAFT":
+      return to === "ACTIVE" || to === "CANCELLED";
+    case "ACTIVE":
+      return to === "WON" || to === "LOST" || to === "CANCELLED";
+    default:
+      return false; // WON / LOST / CANCELLED are terminal
+  }
+}
+
+/** Newly activated projects always enter the funnel here. */
+export const ACTIVATION_STAGE: SalesStage = "NEW_BRIEF";
+
+/**
+ * Sales-stage moves within ACTIVE (canonical rule): forward any number of
+ * steps; backward exactly one step (use case requires a reason for it).
+ * No synthetic Won/Lost stages exist — closing is a STATUS change.
+ */
+export function canChangeSalesStage(from: SalesStage, to: SalesStage): boolean {
+  const fromIdx = SALES_STAGES.indexOf(from);
+  const toIdx = SALES_STAGES.indexOf(to);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return false;
+  return toIdx > fromIdx || fromIdx - toIdx === 1;
+}
+
+export function isBackwardStageMove(from: SalesStage, to: SalesStage): boolean {
+  return SALES_STAGES.indexOf(to) < SALES_STAGES.indexOf(from);
+}
+
+/**
+ * Legacy migrated rows may sit ACTIVE with PT-UNSPECIFIED / missing context.
+ * They stay readable and stage-operable; this flag lets the UI surface
+ * "enrich me" without blocking normal work (reviewer §2).
+ */
+export function hasIncompleteContext(o: {
+  status: ProjectStatus;
+  industryId: IndustryId | null;
+  projectTypeId: ProjectTypeId | null;
+  nextActionDate: string | null;
+}): boolean {
+  if (o.status !== "ACTIVE") return false;
+  return (
+    o.industryId === null ||
+    o.projectTypeId === null ||
+    !isSelectableProjectType(o.projectTypeId) ||
+    o.nextActionDate === null
+  );
+}
+
+// ---------- Idempotency fingerprint (Step 3 — conflict detection) ----------
+
+/**
+ * Stable fingerprint of the fields that make two create requests "the same
+ * logical request". A retry matches; a materially different payload under the
+ * same client_request_id is an IDEMPOTENCY_CONFLICT and must be rejected,
+ * never silently resolved to the original row.
+ */
+export interface ProjectCreateFingerprintInput {
+  accountId: AccountId;
+  momentEventId: MomentEventId;
+  name: string;
+  status: ProjectStatus;
+  expectedRevenue: number;
+  industryId: IndustryId | null;
+  projectTypeId: ProjectTypeId | null;
+  ownerId: UserId;
+}
+
+export function projectCreateFingerprint(
+  input: ProjectCreateFingerprintInput,
+): string {
+  return [
+    input.accountId, input.momentEventId, input.name.trim(), input.status,
+    String(input.expectedRevenue), input.industryId ?? "-",
+    input.projectTypeId ?? "-", input.ownerId,
+  ].join("|");
+}
+
+export class IdempotencyConflictError extends Error {
+  constructor(clientRequestId: string) {
+    super(
+      `IDEMPOTENCY_CONFLICT: client_request_id ${clientRequestId} was already used with a different payload`,
+    );
+    this.name = "IdempotencyConflictError";
+  }
+}
+
+// ---------- Risk evaluation (reviewer §11 — rules only, no automation) ----------
+
+export type ProjectRiskFlag =
+  | "NO_NEXT_ACTION"
+  | "OVERDUE_NEXT_ACTION"
+  | "NO_RECENT_ACTIVITY"
+  | "STUCK_IN_STAGE"
+  | "INCOMPLETE_CONTEXT";
+
+/** Days a project may sit in one sales stage before it counts as stuck. */
+export const STAGE_STUCK_DAYS = 14;
+
+export interface ProjectRiskInput {
+  status: ProjectStatus;
+  industryId: IndustryId | null;
+  projectTypeId: ProjectTypeId | null;
+  nextAction: string | null;
+  nextActionDate: string | null;
+  createdAt: string;
+  lastActivityAt: string | null;
+  /** changed_at of the latest stage-history entry (null = none recorded). */
+  lastStageChangeAt: string | null;
+  /** org-local date (YYYY-MM-DD) for "today". */
+  today: string;
+  now: Date;
+}
+
+/** Pure rule set — ACTIVE projects only; DRAFT and closed carry no risk. */
+export function projectRiskFlags(input: ProjectRiskInput): ProjectRiskFlag[] {
+  if (input.status !== "ACTIVE") return [];
+  const flags: ProjectRiskFlag[] = [];
+  if (!input.nextAction?.trim() || !input.nextActionDate) {
+    flags.push("NO_NEXT_ACTION");
+  } else if (input.nextActionDate < input.today) {
+    flags.push("OVERDUE_NEXT_ACTION");
+  }
+  if (
+    daysSinceOpportunityContact(input.lastActivityAt, input.createdAt, input.now) >=
+    NO_CONTACT_RISK_DAYS
+  ) {
+    flags.push("NO_RECENT_ACTIVITY");
+  }
+  const stageRef = input.lastStageChangeAt ?? input.createdAt;
+  if (
+    Math.floor((input.now.getTime() - new Date(stageRef).getTime()) / 86_400_000) >=
+    STAGE_STUCK_DAYS
+  ) {
+    flags.push("STUCK_IN_STAGE");
+  }
+  if (
+    hasIncompleteContext({
+      status: input.status,
+      industryId: input.industryId,
+      projectTypeId: input.projectTypeId,
+      nextActionDate: input.nextActionDate,
+    })
+  ) {
+    flags.push("INCOMPLETE_CONTEXT");
+  }
+  return flags;
+}
+
 // ---------- Project ↔ Contact roles (handoff §24 Step 3) ----------
 
 export type ProjectContactRole =

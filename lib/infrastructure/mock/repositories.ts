@@ -66,6 +66,8 @@ import type {
   OpportunityRepository,
   Paginated,
   ProjectContactLink,
+  ProjectFieldsPatch,
+  ProjectTransitionInput,
   ProjectTypeRepository,
   Repositories,
   SignalRepository,
@@ -537,6 +539,84 @@ class MockOpportunityRepository implements OpportunityRepository {
     return this.projectContacts
       .filter((pc) => pc.opportunityId === id)
       .map((pc) => ({ contactId: pc.contactId, role: pc.role }));
+  }
+
+  private appliedTransitions = new Map<string, OpportunityId>();
+
+  async applyTransition(
+    input: ProjectTransitionInput,
+  ): Promise<{ applied: boolean; opportunity: Opportunity | null }> {
+    const opp = opportunities.find((o) => o.id === input.opportunityId) ?? null;
+    // Idempotent retry: this request already applied — report success, no write.
+    if (this.appliedTransitions.has(input.clientRequestId)) {
+      return { applied: true, opportunity: opp };
+    }
+    if (
+      !opp ||
+      opp.status !== input.fromStatus ||
+      opp.salesStage !== input.fromStage
+    ) {
+      return { applied: false, opportunity: opp };
+    }
+    if (!isValidStatusStagePair(input.toStatus, input.toStage)) {
+      throw new Error("status/sales_stage pairing violated");
+    }
+    const now = new Date().toISOString();
+    opp.status = input.toStatus;
+    opp.salesStage = input.toStage;
+    if (input.set) {
+      if (input.set.industryId !== undefined) opp.industryId = input.set.industryId;
+      if (input.set.subIndustryId !== undefined) opp.subIndustryId = input.set.subIndustryId;
+      if (input.set.projectTypeId !== undefined) opp.projectTypeId = input.set.projectTypeId;
+      if (input.set.brief !== undefined) opp.brief = input.set.brief;
+      if (input.set.expectedRevenue !== undefined) opp.expectedRevenue = input.set.expectedRevenue;
+      if (input.set.closeDate !== undefined) opp.closeDate = input.set.closeDate;
+      if (input.set.expectedDeliveryDate !== undefined) opp.expectedDeliveryDate = input.set.expectedDeliveryDate;
+      if (input.set.nextAction !== undefined) opp.nextAction = input.set.nextAction;
+      if (input.set.nextActionDate !== undefined) opp.nextActionDate = input.set.nextActionDate;
+      if (input.set.lostReason !== undefined) opp.lostReason = input.set.lostReason;
+      if (input.set.cancelReason !== undefined) opp.cancelReason = input.set.cancelReason;
+    }
+    opp.updatedAt = now;
+    // History + (implicit) audit land with the state change — same batch
+    // semantics as D1.
+    this.stageHistory.push({
+      id: `PSH:${input.clientRequestId}`,
+      opportunityId: opp.id,
+      fromStatus: input.fromStatus,
+      toStatus: input.toStatus,
+      fromStage: input.fromStage,
+      toStage: input.toStage,
+      reason: input.reason,
+      changedBy: input.changedBy,
+      changedAt: now,
+    });
+    this.appliedTransitions.set(input.clientRequestId, opp.id);
+    return { applied: true, opportunity: opp };
+  }
+
+  async updateFields(
+    id: OpportunityId,
+    patch: ProjectFieldsPatch,
+    changedBy: UserId,
+  ): Promise<Opportunity | null> {
+    void changedBy; // audit identity is a D1 concern; mock keeps parity of shape
+    const opp = opportunities.find((o) => o.id === id) ?? null;
+    if (!opp) return null;
+    if (patch.industryId !== undefined && !industryById.has(patch.industryId)) {
+      throw new Error(`Unknown industry: ${patch.industryId}`);
+    }
+    if (patch.projectTypeId !== undefined && !projectTypeById.has(patch.projectTypeId)) {
+      throw new Error(`Unknown project type: ${patch.projectTypeId}`);
+    }
+    // undefined = "no change" — identical semantics to the D1 adapter.
+    for (const [key, value] of Object.entries(patch)) {
+      if (value !== undefined) {
+        (opp as unknown as Record<string, unknown>)[key] = value;
+      }
+    }
+    opp.updatedAt = new Date().toISOString();
+    return opp;
   }
 }
 

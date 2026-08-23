@@ -73,6 +73,8 @@ import type {
   LogInteractionInput,
   AddProjectContactInput,
   IndustryRepository,
+  ProjectFieldsPatch,
+  ProjectTransitionInput,
   MasterMomentRepository,
   ProjectContactLink,
   ProjectTypeRepository,
@@ -1249,6 +1251,143 @@ class D1OpportunityRepository implements OpportunityRepository {
       contactId: r.contact_id as ContactId,
       role: r.role as ProjectContactRole,
     }));
+  }
+
+  async applyTransition(
+    input: ProjectTransitionInput,
+  ): Promise<{ applied: boolean; opportunity: Opportunity | null }> {
+    if (!isValidStatusStagePair(input.toStatus, input.toStage)) {
+      throw new Error("status/sales_stage pairing violated");
+    }
+    const now = new Date().toISOString();
+    const historyId = `PSH:${input.clientRequestId}`;
+    const set = input.set ?? {};
+    const setClauses: string[] = ["status = ?", "sales_stage = ?", "updated_at = ?"];
+    const setBinds: unknown[] = [input.toStatus, input.toStage, now];
+    const optional: [string, unknown][] = [
+      ["industry_id", set.industryId],
+      ["sub_industry_id", set.subIndustryId],
+      ["project_type_id", set.projectTypeId],
+      ["brief", set.brief],
+      ["expected_revenue", set.expectedRevenue],
+      ["close_date", set.closeDate],
+      ["expected_delivery_date", set.expectedDeliveryDate],
+      ["next_action", set.nextAction],
+      ["next_action_date", set.nextActionDate],
+      ["lost_reason", set.lostReason],
+      ["cancel_reason", set.cancelReason],
+    ];
+    for (const [col, val] of optional) {
+      if (val !== undefined) {
+        setClauses.push(`${col} = ?`);
+        setBinds.push(val);
+      }
+    }
+    // ONE batch: conditional UPDATE guarded on the expected from-state, then
+    // history + audit rows that only materialize if the row now sits in the
+    // to-state. INSERT OR IGNORE + deterministic ids keep retries single-shot.
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE opportunities SET ${setClauses.join(", ")}
+           WHERE organization_id = ? AND id = ?
+             AND status = ? AND COALESCE(sales_stage, '') = COALESCE(?, '')`,
+        )
+        .bind(
+          ...setBinds, ORG, input.opportunityId,
+          input.fromStatus, input.fromStage,
+        ),
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO project_stage_history (
+             id, organization_id, opportunity_id, from_status, to_status,
+             from_stage, to_stage, reason, changed_by, changed_at, client_request_id
+           )
+           SELECT ?, ?, o.id, ?, ?, ?, ?, ?, ?, ?, ?
+           FROM opportunities o
+           WHERE o.organization_id = ? AND o.id = ?
+             AND o.status = ? AND COALESCE(o.sales_stage, '') = COALESCE(?, '')`,
+        )
+        .bind(
+          historyId, ORG, input.fromStatus, input.toStatus,
+          input.fromStage, input.toStage, input.reason, input.changedBy,
+          now, input.clientRequestId,
+          ORG, input.opportunityId, input.toStatus, input.toStage,
+        ),
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO audit_logs (id, organization_id, user_id, entity_type, entity_id, action, after_json, created_at)
+           SELECT ?, ?, ?, 'opportunity', h.opportunity_id, 'transition', ?, ?
+           FROM project_stage_history h
+           WHERE h.organization_id = ? AND h.client_request_id = ?`,
+        )
+        .bind(
+          `AUD:${historyId}`, ORG, input.changedBy,
+          JSON.stringify({
+            from: { status: input.fromStatus, stage: input.fromStage },
+            to: { status: input.toStatus, stage: input.toStage },
+            set, reason: input.reason,
+          }),
+          now, ORG, input.clientRequestId,
+        ),
+    ]);
+    // applied ⇔ this request's history row exists (covers idempotent retries:
+    // the row from the first attempt still reports success).
+    const history = await this.db
+      .prepare(
+        "SELECT 1 FROM project_stage_history WHERE organization_id = ? AND client_request_id = ?",
+      )
+      .bind(ORG, input.clientRequestId)
+      .first();
+    const opportunity = await this.getById(input.opportunityId);
+    return { applied: history !== null, opportunity };
+  }
+
+  async updateFields(
+    id: OpportunityId,
+    patch: ProjectFieldsPatch,
+    changedBy: UserId,
+  ): Promise<Opportunity | null> {
+    const now = new Date().toISOString();
+    const clauses: string[] = ["updated_at = ?"];
+    const binds: unknown[] = [now];
+    const cols: [string, unknown][] = [
+      ["name", patch.name],
+      ["brief", patch.brief],
+      ["expected_revenue", patch.expectedRevenue],
+      ["expected_gp", patch.expectedGP],
+      ["close_date", patch.closeDate],
+      ["expected_delivery_date", patch.expectedDeliveryDate],
+      ["industry_id", patch.industryId],
+      ["sub_industry_id", patch.subIndustryId],
+      ["project_type_id", patch.projectTypeId],
+      ["next_action", patch.nextAction],
+      ["next_action_date", patch.nextActionDate],
+    ];
+    for (const [col, val] of cols) {
+      if (val !== undefined) {
+        clauses.push(`${col} = ?`);
+        binds.push(val);
+      }
+    }
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE opportunities SET ${clauses.join(", ")}
+           WHERE organization_id = ? AND id = ?`,
+        )
+        .bind(...binds, ORG, id),
+      this.db
+        .prepare(
+          `INSERT INTO audit_logs (id, organization_id, user_id, entity_type, entity_id, action, after_json, created_at)
+           VALUES (?, ?, ?, 'opportunity', ?, 'update', ?, ?)`,
+        )
+        .bind(
+          `AUD-${crypto.randomUUID()}`, ORG, changedBy, id,
+          JSON.stringify(patch), now,
+        ),
+    ]);
+    return this.getById(id);
   }
 }
 

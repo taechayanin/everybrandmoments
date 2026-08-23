@@ -247,6 +247,50 @@ export interface ProjectContactLink {
   role: ProjectContactRole;
 }
 
+/** Atomic status/stage transition — project UPDATE + stage history + audit
+ * land in ONE batch, guarded by the expected from-state (acceptAtomic
+ * pattern). Idempotent via clientRequestId: a retry that already applied
+ * reports { applied: true } without writing twice. */
+export interface ProjectTransitionInput {
+  opportunityId: OpportunityId;
+  fromStatus: ProjectStatus;
+  toStatus: ProjectStatus;
+  fromStage: SalesStage | null;
+  toStage: SalesStage | null;
+  /** Fields written atomically with the transition (activation context,
+   * close reasons, next-action refresh). */
+  set?: {
+    industryId?: IndustryId;
+    subIndustryId?: IndustryId | null;
+    projectTypeId?: ProjectTypeId;
+    brief?: string | null;
+    expectedRevenue?: number;
+    closeDate?: string;
+    expectedDeliveryDate?: string | null;
+    nextAction?: string;
+    nextActionDate?: string | null;
+    lostReason?: string;
+    cancelReason?: string;
+  };
+  reason: string | null;
+  changedBy: UserId;
+  clientRequestId: string;
+}
+
+export interface ProjectFieldsPatch {
+  name?: string;
+  brief?: string | null;
+  expectedRevenue?: number;
+  expectedGP?: number;
+  closeDate?: string;
+  expectedDeliveryDate?: string | null;
+  industryId?: IndustryId;
+  subIndustryId?: IndustryId | null;
+  projectTypeId?: ProjectTypeId;
+  nextAction?: string;
+  nextActionDate?: string | null;
+}
+
 export interface OpportunityRepository {
   getById(id: OpportunityId): Promise<Opportunity | null>;
   /** Bounded, newest-first page — production paths must use this. */
@@ -262,6 +306,18 @@ export interface OpportunityRepository {
   /** { added: false } = duplicate (opportunity, contact, role). Throws on a
    * contact outside the organization or unknown opportunity. */
   addProjectContact(input: AddProjectContactInput): Promise<{ added: boolean }>;
+  /** { applied: false } = preconditions did not match (state already moved,
+   * unknown/foreign id) and this request never applied before. */
+  applyTransition(
+    input: ProjectTransitionInput,
+  ): Promise<{ applied: boolean; opportunity: Opportunity | null }>;
+  /** Field update + audit (no status/stage change) — invariants beyond the
+   * D1 CHECKs are the calling use case's job. */
+  updateFields(
+    id: OpportunityId,
+    patch: ProjectFieldsPatch,
+    changedBy: UserId,
+  ): Promise<Opportunity | null>;
   listProjectContacts(id: OpportunityId): Promise<ProjectContactLink[]>;
 }
 

@@ -1,49 +1,54 @@
 # REVIEW PACKET
 
 ## Step
-Project Pipeline Step 2 — Project Schema Evolution
+Project Pipeline Step 3 — Project Application Use Cases
 
 ## COMMIT
-1 logical commit: `feat(project): status×stage schema, stage history, project contacts, idempotent create (Pipeline Step 2)`
+1 logical commit: `feat(project): lifecycle use cases — create/activate/stage/close/cancel/next-action/risk (Pipeline Step 3)`
 
-## PROJECT SCHEMA (migration 0010 — LOCAL only)
-`opportunities` rebuild (pattern 0004): **status** (5 ค่า) + **sales_stage** (6 ค่า, nullable) + context บน project เอง — `industry_id` / `sub_industry_id` (optional) / `project_type_id` (**master FK เท่านั้น — ไม่มี canonical free text**) / `moment_event_id` (NOT NULL เดิม) + commercial: `brief`, `expected_delivery_date`, `next_action_date`, `lost_reason`, `cancel_reason` + hardening: `client_request_id` (partial unique ต่อ org), `created_by`, `updated_at` + indexes (owner+status, account, org+status+stage)
+## USE CASES (`lib/application/projects/`)
+- `createProject` — DRAFT เสมอ (stage NULL, **ไม่ auto-activate**); ตรวจ account/moment ownership + solutions มีจริง; industry prefill จาก account แล้ว **snapshot ลง project**; atomic+idempotent ผ่าน repo batch ของ Step 2
+- `activateProject` — DRAFT→ACTIVE ที่ `NEW_BRIEF`; เติม context ที่ขาดได้ในคำสั่งเดียว (fields ลงพร้อม transition ใน batch เดียว)
+- `updateProject` — แก้ commercial fields; ค่าใหม่ของ project type ต้องเป็น selectable master เท่านั้น (sentinel reject); closed = immutable
+- `updateProjectStage` — ACTIVE เท่านั้น; กติกากลาง: เดินหน้าไกลแค่ไหนก็ได้, **ถอยได้ 1 ขั้นและต้องมีเหตุผล**; ไม่มี synthetic Won/Lost stage
+- `closeProjectWon` / `closeProjectLost` (lost_reason บังคับที่ zod + schema CHECK) / `cancelProject` (cancel_reason + actor บังคับ; จาก DRAFT|ACTIVE)
+- `updateProjectNextAction` — สอง field ไปด้วยกันเสมอ (invariant §11)
+- `addProjectContact` — ownership ครบสองชั้น (ดู CONTACT OWNERSHIP)
+- `evaluateProjectRisk` — โหลด CRM context (last activity + stage history) → pure rules
 
-## STATUS × STAGE INVARIANTS (บังคับระดับ D1 — ไม่พึ่ง TS/Zod อย่างเดียว)
-CHECKs ใน schema จริง (พิสูจน์ด้วย negative smoke ทุกข้อ):
-- `(status='ACTIVE') = (sales_stage IS NOT NULL)` — DRAFT/WON/LOST/CANCELLED บังคับ stage NULL, ACTIVE บังคับ non-null ✅ (ทดสอบยิง INSERT ผิดจริง → `CHECK constraint failed`)
-- `status<>'LOST' OR lost_reason IS NOT NULL` ✅ · `status<>'CANCELLED' OR cancel_reason IS NOT NULL`
-- ACTIVE ขั้นต่ำระดับ DB: `industry_id + project_type_id + owner_id + next_action NOT NULL` ✅
-- FK ทุกตัว (industry/sub/type/account/moment/owner) — invalid FK ถูกปฏิเสธจริง ✅
-- ส่วนของ gate ที่ DB แยกไม่ได้ (selectable type + next_action_date — legacy ACTIVE ถือ PT-UNSPECIFIED/date NULL ได้โดยชอบ) บังคับที่ domain `activationGateErrors()` + repo create ทั้ง mock/D1 → **สร้างใหม่แบบ ACTIVE ด้วย PT-UNSPECIFIED = reject** (เทสต์)
+Zod `.strict()` ทุก boundary ใน `lib/validation/project.ts`; `writesEnabled()` gate อยู่ที่ server-action layer ตาม pattern เดิม (actions มากับ UI Step 4)
 
-## COMMERCIAL CONTEXT
-Intelligence key ครบบน project: `industry_id + moment_event_id + project_type_id`; DRAFT ไม่สมบูรณ์ได้ (นโยบาย "Draft may be incomplete"); sub_industry optional ทั้ง gate และ schema; workspace flow เดิม (`createOpportunity`) ปรับเป็นสร้าง **DRAFT** + snapshot industry จาก account — ยังไม่มี real project type จึงห้ามเข้า funnel จนกว่า Step-3 wizard activate
+## ACTIVATION GATE (canonical — จุดเดียว)
+`activationGateErrors()` ใน `lib/domain/opportunity.ts` เป็น**แหล่งกติกาเดียว**: account, industry_id, moment, **selectable project_type (PT-UNSPECIFIED ไม่ผ่านเสมอ)**, owner, revenue, next_action, next_action_date; sub_industry optional — use case และ repo create เรียกฟังก์ชันเดียวกัน (defense in depth, ไม่มีการ re-implement); UI Step 4 จะเรียกผ่าน use case เท่านั้น
 
-## LEGACY MIGRATION (historical truth — ไม่ fabricate)
-Mapping เอกสารในหัว 0010 + `legacyStageToStatusStage()` (source เดียว, drift-tested):
-`Discovery→(ACTIVE,DISCOVERY)` · `Solution Design→(ACTIVE,SOLUTION_DESIGN)` · `Proposal→(ACTIVE,PROPOSAL)` · `Negotiation→(ACTIVE,NEGOTIATION)` · `Won→(WON,NULL)` · `Lost→(LOST,NULL)` — **ไม่มี synthetic closing stage**; `industry_id` จาก account ณ เวลา migrate; `project_type_id='PT-UNSPECIFIED'` (sentinel legacy เท่านั้น); Lost เดิม → `lost_reason = "legacy: ไม่ได้บันทึกเหตุผล (ข้อมูลเก่า)"`; moment_event_id คงเดิม — **ผลจริง local D1**: 12 แถว → ACTIVE 11 (D5/SD2/P2/N2), WON 1, legacy_pt 12/12, industry 12/12, lost ไร้เหตุผล 0
-
-## STAGE HISTORY
-`project_stage_history` (from/to_status + from/to_stage + reason + changed_by + changed_at + client_request_id unique) — `create()` เขียน entry แรก (creation) ใน **`db.batch()` เดียว** กับ opportunity+solutions+audit → รากฐาน atomic update+history+audit ของ Step 3; ไม่ fabricate history ให้แถว migrate (analytics เริ่มนับไปข้างหน้า); `listStageHistory()` mock/D1 parity
-
-## PROJECT CONTACTS
-`project_contacts` — 4 roles CHECK (`DECISION_MAKER/CHAMPION/PROCUREMENT/MAIN_CONTACT`), `UNIQUE (opportunity_id, contact_id, role)` (duplicate → `{added:false}` ไม่ throw; พิสูจน์ระดับ D1 ด้วย UNIQUE smoke ✅); same-org บังคับใน INSERT…SELECT WHERE EXISTS (contact ต่าง org → throw, เทสต์); same-account enforcement จองไว้ที่ use case Step 3 ตามคำสั่ง
-
-## SOLUTION RELATIONS (ปิดบั๊กเดิม)
-`CreateOpportunityInput.solutionIds` → persist ลง `opportunity_solutions` ใน batch เดียวกับ create (INSERT OR IGNORE = retry-safe); `listSolutionIds()` อ่านกลับ; workspace flow ส่ง solutionIds ที่เคย validate-แล้วทิ้ง เข้า join จริงแล้ว — ไม่แตะ design ของ Solution system
+## LEGACY COMPATIBILITY
+Legacy ACTIVE + PT-UNSPECIFIED: **อ่านได้ + เปลี่ยน stage ได้ปกติ** (เทสต์ยืนยันกับ fixture จริง) — gate ทำงานเฉพาะจุด activate/แก้ type; `hasIncompleteContext()` ให้ UI ชู "เติมข้อมูล" ภายหลัง (และโผล่ใน risk flags เป็น `INCOMPLETE_CONTEXT`)
 
 ## IDEMPOTENCY
-`client_request_id` partial unique ต่อ org + create ใช้ INSERT OR IGNORE + survivor read-back: request เดิมซ้ำ → `{created:false}` คืนแถวเดิม, history ไม่เบิ้ล (id deterministic `PSH:<req>`), solutions/audit ไม่เบิ้ล (OR IGNORE + deterministic ids) — เทสต์ mock + UNIQUE smoke จริงบน D1 ✅
+- Exact retry: `{created:false}` + แถวเดิม + history/solutions/audit ไม่เบิ้ล (เทสต์นับจริง)
+- **Same key + payload ต่างสาระ → `IdempotencyConflictError` (IDEMPOTENCY_CONFLICT)** — เทียบ `projectCreateFingerprint()` (account, moment, name, status, revenue, industry, type, owner) ระหว่าง request กับแถวจริง — ไม่มีการคืนแถวเดิมแบบเงียบ ๆ
+- Transition idempotency: history id = `PSH:<clientRequestId>` + unique index → retry รายงาน applied โดยไม่เขียนซ้ำ
 
-## D1 SMOKE (local จริงทั้งหมด)
-- Legacy mapping: status×stage distribution ถูกต้อง 12/12 ✅
-- Negative: ACTIVE+NULL stage ✗ / DRAFT+stage ✗ / LOST ไร้ reason ✗ / ACTIVE ไร้ industry ✗ / FK ปลอม ✗ — ทุกตัว fail ด้วย CHECK/FK ตรงข้อความคาด ✅
-- Unique: client_request_id ซ้ำ ✗, project_contacts ซ้ำ ✗ ✅ (ลบ smoke rows แล้ว)
-- Seed regenerate + apply + rerun: schema ใหม่ครบ ไม่ duplicate ✅
+## CONTACT OWNERSHIP
+ก่อน link: (1) org ตรง — repo บังคับใน INSERT…SELECT WHERE EXISTS (Step 2), (2) **contact.accountId ต้องเท่ากับ project.accountId — cross-account ใน org เดียวกันก็ reject** (use case Step 3, มีเทสต์ทั้ง same-account ✓ / cross-account ✗ / unknown-org ✗ / duplicate → added:false)
+
+## STAGE TRANSITIONS
+`canTransitionStatus` (DRAFT→ACTIVE|CANCELLED; ACTIVE→WON|LOST|CANCELLED; terminal นิ่ง) + `canChangeSalesStage` (forward ทุกระยะ, backward 1 ขั้น, ห้าม self-move) — DRAFT ขยับ stage ไม่ได้ (เทสต์turn); ทุกการขยับเขียน history พร้อมกัน
+
+## WON / LOST / CANCELLED
+ทุกตัว: stage → NULL (CHECK คู่ระดับ DB บังคับซ้ำ), reason ตามชนิด (LOST/CANCELLED บังคับ, zod min length), terminal แก้ไขไม่ได้ (`updateProject` บน closed → immutable error), close metadata (reason + changed_by + changed_at) ลง history+audit
+
+## PROJECT RISK
+`projectRiskFlags()` pure — ACTIVE เท่านั้น: `NO_NEXT_ACTION` (ไม่มี action/date), `OVERDUE_NEXT_ACTION` (date < today org-local), `NO_RECENT_ACTIVITY` (≥7 วัน COALESCE createdAt — กติกาเดิม), `STUCK_IN_STAGE` (≥14 วันจาก history ล่าสุด), `INCOMPLETE_CONTEXT` (legacy enrichment) — **rules เท่านั้น ไม่มี automation** ตามคำสั่ง; DRAFT/closed = ไม่มี risk
+
+## ATOMIC WRITES
+`applyTransition` (repo primitive ใหม่, mock/D1 parity): **conditional UPDATE (guard from-state) + history + audit ใน `db.batch()` เดียว** — history/audit materialize เฉพาะเมื่อ UPDATE เกิดจริง (INSERT…SELECT conditional + OR IGNORE + deterministic ids `PSH:<req>` / `AUD:PSH:<req>`); applied ⇔ history ของ request มีอยู่ → retry-safe; concurrent state change → `{applied:false}` → use case แจ้ง error ชัด ไม่เขียนครึ่งเดียว
+
+## พบและแก้ระหว่างทาง (mock/D1 parity bug)
+mock `updateFields` เดิมใช้ `Object.assign` ซึ่ง copy ค่า `undefined` → ล้าง field ได้ ขัดกับ D1 (undefined = no-change) — แก้ให้ skip undefined เหมือน D1 แล้ว และเขียนเทสต์เคส missing-industry ใหม่ให้ตรงไปตรงมา (สร้าง draft ไร้ industry ผ่าน repo ตรง = จำลอง unmapped account)
 
 ## TESTS
-**180/180 passing** (+4 real-API smoke ข้าม) — Step 2 เพิ่ม 15 ครอบทุกข้อที่สั่ง: pairing ทั้ง 5 status (domain+repo), activation gate ทุก field + PT-UNSPECIFIED reject + sub optional, invalid FK reject, stage history entry แรก, duplicate contact + cross-org guard, legacy conversion ทุก stage + unknown throw, fixtures ตรง 0010 mapping, solution persistence, idempotency (row+history ไม่เบิ้ล), drift 0010 (CASE mapping + CHECKs + unique + tables ครบ) — เทสต์เดิม 165 ตัว **ปรับตาม field ใหม่โดยคง semantics เดิมทุกข้อ ไม่มีการลบ/อ่อนแรง**
+**205/205 passing** (+4 real-API smoke ข้าม) — Step 3 เพิ่ม 25 ครอบทุกข้อในรายการ reviewer: create DRAFT / activate complete / missing industry / missing moment (domain — schema ทำให้ impossible โดยชอบ) / missing type / PT-UNSPECIFIED / missing next action date / cross-account contact / idempotent exact retry / conflict payload / stage atomic history (forward+backward+reason) / WON clears stage / LOST clears+requires reason / CANCELLED clears+requires reason (จาก DRAFT และ ACTIVE) / legacy ACTIVE operable+surfaced / risk rules ครบ 5 flag + DRAFT/closed ว่าง / org isolation / updateProject (sentinel reject + closed immutable) / next-action invariant
 
 ## TYPECHECK
 PASS
@@ -55,13 +60,12 @@ PASS (0 errors, 0 warnings)
 PASS
 
 ## DEVIATIONS
-- **Workspace create → DRAFT**: flow เดิมสร้าง stage "Discovery" ตรง ๆ; หลัง 0010 การสร้างใหม่แบบ ACTIVE ต้องผ่าน gate เต็ม (ซึ่ง flow เดิมไม่มี project type/next-action date) จึง map เป็น DRAFT + snapshot industry — ตรง invariant, Step-3 wizard เป็นผู้ activate; queue/360 แสดงแถว DRAFT ด้วย Thai badge ("ฉบับร่าง") แล้ว
-- UI ปรับเท่าที่จำเป็นให้ compile/แสดงถูก (StageBadge → status×stage Thai labels, pipeline strip → 6 sales stages): ไม่ใช่ Board/List ใหม่ — นั่นคือ Step 4
+ไม่มี — ไม่มี UI, ไม่มี server actions (มากับ Step 4 ตาม pattern gate ที่ action layer), ไม่มี automation ใน risk
 
 ## KNOWN RISKS
-- KPI "open" เดิมทุกจุดเปลี่ยนเป็น `status='ACTIVE'` (DRAFT ไม่นับ pipeline) — ตรงแผน แต่ตัวเลขบนหน้าจอจะต่างจากก่อน (DRAFT แยกออก)
-- Won/Lost legacy ไม่มี closing stage (ตัดสินใจ #2) — conversion analytics เริ่มจาก history ไปข้างหน้า
-- 0010 ยังไม่ apply remote (คิว PRE_DEPLOY: 0004–0010 + preflights ที่หัวไฟล์)
+- `updateFields` ไม่เขียน stage history (ถูกต้อง — ไม่ใช่ state change) แต่ audit ลงทุกครั้งฝั่ง D1; mock ไม่เก็บ audit store (พฤติกรรมเดิมของ mock ทุก write)
+- Backward-stage เหตุผลถูกบังคับที่ use case (DB บังคับไม่ได้เพราะแยกทิศไม่ออก) — ช่องทางเขียนอื่นไม่มี (repo primitive ไม่ถูก export ไปที่ UI)
+- Migrations 0004–0010 ยังไม่ apply remote (คิว PRE_DEPLOY เดิม)
 
 ## NEXT PROPOSED STEP
-Step 3 — Project Use Cases (createProject wizard backend / activateProject / updateStage / closeProject+cancelProject / next-action enforcement / risk rule)
+Step 4 — Project Pipeline UI (Board | List + server actions + rename "06 · Project Pipeline")
