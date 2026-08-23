@@ -13,11 +13,12 @@ Pre-sprint cleanup — close remaining known issues before CRM Activity Layer sp
 - `98bf02f` fix(seed): clear audit/task/attachment tables before re-seed
 - `794f85a` fix(jobs): consume DLQ and mark dead-lettered signals failed
 - `0e656ec` perf(dashboards): store-side aggregates replace listAll scans
+- `fa2ccd8` fix(jobs): DLQ consumer retries transient D1 failures (review round-1 item 7)
 
 ## Files Changed
 - scripts/generate-seed.ts, seed/seed.sql — CLEAR_ORDER เพิ่ม audit_logs, tasks, attachments, automation_rules, account_external_ids, deliveries_external (ลบก่อน parents)
-- workers/jobs/src/index.ts — DLQ consumer: parse job → UPDATE moment_signals เป็น `failed` (scoped org+account, guard `!= 'processed'`) → ack เสมอ
-- workers/jobs/wrangler.jsonc — เพิ่ม consumer สำหรับ `everybrandmoments-jobs-dlq` (max_retries 0)
+- workers/jobs/src/index.ts — DLQ consumer: invalid payload → log+ack; DETECT_MOMENT → UPDATE moment_signals เป็น `failed` (scoped org+account, guard `!= 'processed'`, idempotent) → ack; transient D1 error → `message.retry()`
+- workers/jobs/wrangler.jsonc — consumer สำหรับ `everybrandmoments-jobs-dlq` `max_retries: 3` (รอบแรกใส่ 0 — แก้ตาม review round-1 ข้อ 7 ใน `fa2ccd8`)
 - lib/repositories/index.ts — เพิ่ม `AccountStats`, `AccountRepository.stats/listByHealth`, `MomentStats`, `MomentListFilter`, `MomentRepository.stats/listFiltered`; ติด doc ว่า `listAll()` = mock/tests only
 - lib/infrastructure/cloudflare/d1/repositories.ts — implement ทั้ง 4 เมธอดด้วย SQL aggregate (`SUM(CASE WHEN …)`) และ filtered SELECT + LIMIT
 - lib/infrastructure/mock/repositories.ts — mirror ทั้ง 4 เมธอดแบบ in-memory
@@ -61,7 +62,7 @@ N/A — ไม่มีการเปลี่ยน UI
 - tests/aggregates.test.ts — account stats = full-scan parity, listByHealth filter+bound, moment stats parity, listFiltered filter/order/limit
 
 ## Test Results
-41 / 41 passing
+41 / 41 passing (7 files) — re-run after fa2ccd8
 
 ## Typecheck
 PASS
@@ -84,7 +85,7 @@ PASS
 ## Things Reviewer Should Check Carefully
 1. DLQ UPDATE guard: `processing_status != 'processed'` เพียงพอไหม (ไม่มี guard เวอร์ชัน/timestamp)
 2. `stats()` ของ accounts นับ active จาก `customer_since IS NOT NULL AND != ''` — semantics ตรงกับของเดิม (`a.customerSince` truthy) ไหม
-3. wrangler.jsonc: DLQ consumer `max_retries: 0` — ถ้า UPDATE ล้มเหลว message หายเลย (ack เสมอ) — ยอมรับได้ไหมสำหรับ observability-only path
+3. DLQ retry (fa2ccd8): หลัง 3 retries ล้มเหลวหมด message ถูก drop (DLQ ไม่มี DLQ ของตัวเอง) — signals ค้าง `queued` ในเคสนั้น; ยอมรับเป็น residual risk ระดับ observability ไหม
 
 ## Next Proposed Step
 CRM Activity Layer — Step 1 (Migration 0004 + Activity domain + Zod contracts) ตาม IMPLEMENTATION_PLAN.md — รอ `PLAN APPROVED — IMPLEMENT STEP 1 ONLY`
