@@ -23,6 +23,7 @@ const q = (v: string | number | null | undefined): string => {
 const b = (v: boolean): string => (v ? "1" : "0");
 
 const CLEAR_ORDER = [
+  "activity_ai_suggestions", "activities",
   "audit_logs", "tasks", "attachments", "automation_rules",
   "account_external_ids", "deliveries_external",
   "appointments", "opportunity_solutions", "opportunities",
@@ -71,8 +72,10 @@ for (const a of ACCOUNTS) {
     `INSERT INTO accounts (id, organization_id, name, industry, employee_size, location, branch_count, tier, owner_id, customer_since, lifetime_value, gross_profit, health, account_score, notes, created_at, updated_at) VALUES (${q(a.id)}, ${q(ORG)}, ${q(a.name)}, ${q(a.industry)}, ${a.employeeSize}, ${q(a.location)}, ${a.branchCount}, ${q(a.tier)}, ${q(a.ownerId)}, ${q(a.customerSince)}, ${a.ltv}, ${a.grossProfit}, ${q(a.health)}, ${a.accountScore}, ${q(a.notes ?? null)}, ${q(NOW)}, ${q(NOW)});`,
   );
   a.contacts.forEach((c, i) => {
+    // Legacy free-text role is a job title; the first contact of each
+    // account is seeded as DECISION_MAKER so buying-role UI has data.
     lines.push(
-      `INSERT INTO contacts (id, account_id, name, role, phone, is_primary, created_at) VALUES (${q(`CT-${a.id}-${i + 1}`)}, ${q(a.id)}, ${q(c.name)}, ${q(c.role)}, ${q(c.phone)}, ${b(i === 0)}, ${q(NOW)});`,
+      `INSERT INTO contacts (id, organization_id, account_id, name, job_title, phone, buying_role, is_primary, status, created_at, updated_at) VALUES (${q(`CT-${a.id}-${i + 1}`)}, ${q(ORG)}, ${q(a.id)}, ${q(c.name)}, ${q(c.role)}, ${q(c.phone)}, ${i === 0 ? q("DECISION_MAKER") : "NULL"}, ${b(i === 0)}, 'ACTIVE', ${q(NOW)}, ${q(NOW)});`,
     );
   });
   for (const [category, bought] of Object.entries(a.whitespace)) {
@@ -86,6 +89,17 @@ for (const a of ACCOUNTS) {
     );
   });
 }
+
+// CRM Activity Layer (0004): sample timeline entries so Account 360 has
+// data before the team starts logging. First contact of the account is the
+// participant; the account owner is the author.
+ACCOUNTS.slice(0, 3).forEach((a, ai) => {
+  const contactId = `CT-${a.id}-1`;
+  lines.push(
+    `INSERT INTO activities (id, organization_id, account_id, contact_id, activity_type, title, body, outcome, next_action, next_action_at, occurred_at, created_by, created_at, updated_at, metadata_json) VALUES (${q(`ACT-${a.id}-1`)}, ${q(ORG)}, ${q(a.id)}, ${q(contactId)}, 'CALL', ${q("โทรติดตามความต้องการ")}, ${q("คุยเรื่องแผนงานไตรมาสหน้า ลูกค้าสนใจดูตัวอย่างสินค้า")}, 'INTERESTED', ${q("ส่งตัวอย่างสินค้าให้ดู")}, ${q("2026-08-25T03:00:00Z")}, ${q("2026-08-20T04:30:00Z")}, ${q(a.ownerId)}, ${q(NOW)}, ${q(NOW)}, ${q(JSON.stringify({ kind: "CALL", durationMinutes: 15 }))});`,
+    `INSERT INTO activities (id, organization_id, account_id, contact_id, activity_type, title, body, occurred_at, created_by, created_at, updated_at) VALUES (${q(`ACT-${a.id}-2`)}, ${q(ORG)}, ${q(a.id)}, ${q(contactId)}, 'NOTE', ${q("บันทึกหลังคุย")}, ${q("ลูกค้าเล่าแผนภายในปีนี้ รอ budget อนุมัติ")}, ${q("2026-08-2" + String(ai + 1) + "T07:00:00Z")}, ${q(a.ownerId)}, ${q(NOW)}, ${q(NOW)});`,
+  );
+});
 
 for (const s of SOLUTIONS) {
   lines.push(

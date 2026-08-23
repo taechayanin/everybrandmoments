@@ -112,7 +112,13 @@ function mapAccount(
       moment: o.moment_code as MomentCode,
       amount: o.revenue,
     })),
-    contacts: contacts.map((c) => ({ name: c.name, role: c.role ?? "", phone: c.phone ?? "" })),
+    // 0004 renamed contacts.role → job_title; read both so the app works on
+    // either side of the migration (full CRM Contact model lands in Step 2).
+    contacts: contacts.map((c) => ({
+      name: c.name,
+      role: c.job_title ?? c.role ?? "",
+      phone: c.phone ?? "",
+    })),
     notes: r.notes ?? undefined,
   };
 }
