@@ -3,8 +3,13 @@
 ## Step
 Step 6 — AI Activity Analysis (async enrichment + human-confirmed suggestions)
 
-## COMMIT
-`b2bf11c`
+## COMMITS
+- `b2bf11c` feat(crm): AI activity analysis — async enrichment + human-confirmed suggestions (Step 6)
+- `77fbc12` fix(crm): durable AI dispatch outbox + mock/D1 parity (Step 6 review)
+
+## STEP-6 REVIEW FIXES
+1. **P0 — Durable dispatch (outbox)**: migration `0007_analysis_outbox.sql` เพิ่ม `activities.analysis_status` (PENDING/QUEUED/PROCESSED + CHECK + partial index) — เขียน **ใน batch เดียวกับ CRM save** (อยู่ใน INSERT ของ activity เอง) → activity ไม่มีทางเกิดโดยไม่มี dispatch record; enqueue สำเร็จ → mark QUEUED, ล้มเหลว → คง PENDING; consumer จบงาน (สำเร็จ/safe-skip/ineligible) → PROCESSED; retry-class error คง QUEUED; **cron reconciler ใหม่** (pattern เดียวกับ signal reconciliation ที่มี E2E แล้ว) กวาด PENDING/QUEUED ที่ stale >15 นาที LIMIT 50 → re-enqueue + mark; suggestion id deterministic ทำให้ duplicate delivery ไร้ผล — **D1 verified**: reconciler เลือกเฉพาะแถว stale PENDING (fresh/PROCESSED ไม่ถูกเลือก), consumer lookup org ผิด → 0 แถว
+2. **P1 — Mock/D1 parity**: mock `acceptAtomic` attach validated solutions ลง moment ที่สร้าง (เหมือน `moment_event_solutions` ฝั่ง D1) และ mock `suggestions.create` ใช้ deterministic id `SUG-<activityId>` + dedupe duplicate delivery เหมือน D1 PK OR IGNORE; contract-parity assertions อยู่ในเทสต์ acceptance (solutions จริง attach / ของปลอมไม่ attach) และเทสต์ duplicate-delivery
 
 ## FILES CHANGED
 - `lib/jobs/contracts.ts` — `ANALYZE_ACTIVITY` job (org/account/activity ids, zod ทั้งสองฝั่ง queue)
@@ -50,7 +55,7 @@ AI เขียนได้แค่ `activity_ai_suggestions` — ห้าม�
 Save path เพิ่มแค่ 1 queue send (ไม่ block, ไม่ throw); Account 360 เพิ่ม 1 bounded query (pending suggestions limit 5) — จาก ~11 → ~12; งาน AI ทั้งหมดอยู่ใน worker async
 
 ## TESTS
-131/131 passing (13 files) — Step 6 เพิ่ม 16 ครอบทั้ง 17 หัวข้อที่สั่ง: Note/Call/Meeting → enqueue job (+ deduped retry ไม่ enqueue ซ้ำ), save สำเร็จเมื่อ queue ล่ม, valid structured response, garbage/invalid output, invented moment code, invalid date, confidence out of range, catalog กรอง solution ปลอม, prompt-injection อยู่ใน delimiters + truncation, 429/5xx→transient / 401/403→config, accept สร้าง Moment ครั้งเดียว + Task ครั้งเดียว, retry idempotent, ignored ไม่สร้างอะไร (รวม accept-หลัง-ignore), re-ignore idempotent, cross-org rejected — (เคส "invalid JSON" ระดับ HTTP ครอบด้วย schema+skip path; retry behavior ระดับ queue ใช้กลไก `message.retry()` เดิมที่มี E2E จากรอบ Sprint 5)
+133/133 passing (13 files) — หลัง review fixes; เพิ่ม: queue ล่ม → save สำเร็จและ **outbox คง PENDING (recoverable)**, dispatch สำเร็จ → QUEUED, duplicate delivery → suggestion เดียว, parity solutions attach — Step 6 เพิ่ม 16 ครอบทั้ง 17 หัวข้อที่สั่ง: Note/Call/Meeting → enqueue job (+ deduped retry ไม่ enqueue ซ้ำ), save สำเร็จเมื่อ queue ล่ม, valid structured response, garbage/invalid output, invented moment code, invalid date, confidence out of range, catalog กรอง solution ปลอม, prompt-injection อยู่ใน delimiters + truncation, 429/5xx→transient / 401/403→config, accept สร้าง Moment ครั้งเดียว + Task ครั้งเดียว, retry idempotent, ignored ไม่สร้างอะไร (รวม accept-หลัง-ignore), re-ignore idempotent, cross-org rejected — (เคส "invalid JSON" ระดับ HTTP ครอบด้วย schema+skip path; retry behavior ระดับ queue ใช้กลไก `message.retry()` เดิมที่มี E2E จากรอบ Sprint 5)
 
 ## TYPECHECK
 PASS
@@ -62,8 +67,8 @@ PASS
 PASS
 
 ## KNOWN RISKS
-- Enqueue ล้มเหลวหลัง save = activity ไม่ถูกวิเคราะห์ (ไม่มี reconciliation แบบ signals) — spec ยอมรับ (AI enrichment optional); เพิ่ม cron reconciliation ได้ภายหลังถ้าต้องการ
-- Mock adapter ไม่ attach solutions ลง moment ตอน accept (D1 ทำครบ) — parity gap เฉพาะ read กลับใน mock demo
+- ~~enqueue-fail ไม่มี reconciliation~~ → ปิดแล้วด้วย outbox + cron reconciler (`77fbc12`)
+- ~~mock parity gap~~ → ปิดแล้ว (`77fbc12`)
 - Suggestion 1 รายการ/activity (deterministic id) — วิเคราะห์ซ้ำหลัง edit activity จะไม่สร้างใหม่ (ตั้งใจใน MVP)
 - ยังไม่ตั้ง ANTHROPIC_API_KEY บน jobs worker remote — จนกว่าจะตั้ง ระบบ skip อย่างปลอดภัย (บันทึกใน pre-deploy checklist)
 
