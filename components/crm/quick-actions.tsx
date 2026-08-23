@@ -5,7 +5,7 @@
 // ContactsPanel (right rail) via a DOM event so the page can stay
 // server-rendered.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createTaskAction } from "@/app/accounts/[id]/actions";
 import { TASK_PRIORITIES } from "@/lib/domain/activity";
@@ -35,7 +35,7 @@ export function QuickActions({
   const [description, setDescription] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestId = useMemo(() => crypto.randomUUID(), []);
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
 
   async function submitTask() {
     setPending(true);
@@ -50,6 +50,7 @@ export function QuickActions({
     });
     setPending(false);
     if (result.ok) {
+      setRequestId(crypto.randomUUID());
       setTaskOpen(false);
       setTitle("");
       setDescription("");

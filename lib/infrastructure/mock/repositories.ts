@@ -425,6 +425,7 @@ function buildTask(id: TaskId, input: CreateCrmTaskInput, now: string): CrmTask 
 
 const activityRequestKeys = new Map<string, ActivityId>();
 const taskRequestKeys = new Map<string, TaskId>();
+const contactRequestKeys = new Map<string, ContactId>();
 
 /** In-memory audit trail mirroring D1's audit_logs — exported so tests can
  * assert the atomic mutation+audit contract (Step-3 review item 4). */
@@ -630,7 +631,16 @@ class MockContactRepository implements ContactRepository {
       .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.name.localeCompare(b.name));
   }
 
-  async create(input: CreateCrmContactInput): Promise<CrmContact> {
+  async create(
+    input: CreateCrmContactInput,
+  ): Promise<{ contact: CrmContact; created: boolean }> {
+    if (input.clientRequestId) {
+      const existing = contactRequestKeys.get(input.clientRequestId);
+      if (existing) {
+        const contact = crmContacts.find((c) => c.id === existing)!;
+        return { contact, created: false };
+      }
+    }
     const now = new Date().toISOString();
     const contact: CrmContact = {
       id: `CT-${crypto.randomUUID()}` as ContactId,
@@ -650,7 +660,8 @@ class MockContactRepository implements ContactRepository {
       updatedAt: now,
     };
     crmContacts.push(contact);
-    return contact;
+    if (input.clientRequestId) contactRequestKeys.set(input.clientRequestId, contact.id);
+    return { contact, created: true };
   }
 
   async update(id: ContactId, patch: UpdateCrmContactPatch): Promise<CrmContact | null> {

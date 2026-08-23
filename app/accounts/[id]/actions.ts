@@ -124,9 +124,9 @@ export async function createContactAction(input: unknown): Promise<CrmActionResu
   if (!writesEnabled()) return { ok: false, error: WRITES_DISABLED_MESSAGE };
   try {
     const data = parseOr(CreateContactSchema, input);
-    await createContact(data);
+    const result = await createContact(data);
     revalidatePath(`/accounts/${data.accountId}`);
-    return { ok: true };
+    return { ok: true, deduped: !result.created };
   } catch (err) {
     return failure(err);
   }

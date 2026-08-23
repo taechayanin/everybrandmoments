@@ -4,7 +4,7 @@
 // No business rules here — every submit goes through the server action →
 // application use case pipeline; this component only shapes the payload.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   createNoteAction,
@@ -51,9 +51,9 @@ export function Composer({
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // One idempotency key per drawer session — a retried submit dedupes, a
-  // fresh open gets a fresh key.
-  const requestId = useMemo(() => crypto.randomUUID(), []);
+  // One idempotency key per logical submission — a retried submit dedupes;
+  // after success a fresh key is issued for the next interaction.
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
 
   // Shared fields
   const [contactId, setContactId] = useState("");
@@ -116,6 +116,7 @@ export function Composer({
     }
     setPending(false);
     if (result.ok) {
+      setRequestId(crypto.randomUUID());
       router.refresh();
       onClose();
     } else {

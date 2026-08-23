@@ -1480,28 +1480,41 @@ class D1ContactRepository implements ContactRepository {
     return res.results.map(mapCrmContact);
   }
 
-  async create(input: CreateCrmContactInput): Promise<CrmContact> {
+  async create(
+    input: CreateCrmContactInput,
+  ): Promise<{ contact: CrmContact; created: boolean }> {
     const id = `CT-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     await this.db
       .prepare(
-        `INSERT INTO contacts (
+        `INSERT OR IGNORE INTO contacts (
            id, organization_id, account_id, name, job_title, department, email,
            phone, line_id, buying_role, influence_level, is_primary, status,
-           notes, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           notes, client_request_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id, ORG, input.accountId, input.name, input.jobTitle ?? null,
         input.department ?? null, input.email ?? null, input.phone ?? null,
         input.lineId ?? null, input.buyingRole ?? null,
         input.influenceLevel ?? null, input.isPrimary ? 1 : 0,
-        input.status ?? "ACTIVE", input.notes ?? null, now, now,
+        input.status ?? "ACTIVE", input.notes ?? null,
+        input.clientRequestId ?? null, now, now,
       )
       .run();
-    const contact = await this.getById(id as ContactId);
+    const survivorId = input.clientRequestId
+      ? (
+          await this.db
+            .prepare(
+              "SELECT id FROM contacts WHERE organization_id = ? AND client_request_id = ?",
+            )
+            .bind(ORG, input.clientRequestId)
+            .first<{ id: string }>()
+        )?.id ?? id
+      : id;
+    const contact = await this.getById(survivorId as ContactId);
     if (!contact) throw new Error("Contact insert failed");
-    return contact;
+    return { contact, created: survivorId === id };
   }
 
   async update(id: ContactId, patch: UpdateCrmContactPatch): Promise<CrmContact | null> {

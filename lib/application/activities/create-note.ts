@@ -4,6 +4,7 @@ import type { Activity, AccountId, ContactId, CrmTask, UserId } from "@/lib/type
 import {
   assertInteractionOwnership,
   buildFollowUpTask,
+  normalizeInteractionTimes,
   validateNextState,
 } from "./shared";
 
@@ -24,6 +25,8 @@ export async function createNote(
   const accountId = input.accountId as AccountId;
   await assertInteractionOwnership(repos, accountId, input);
   validateNextState(input);
+  // Org-local wall time -> UTC ISO before anything is persisted (fix 1).
+  input = normalizeInteractionTimes(input);
 
   return repos.interactions.logInteraction({
     activity: {

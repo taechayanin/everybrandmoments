@@ -1,4 +1,5 @@
 import { getRepositories } from "@/lib/infrastructure";
+import { orgLocalToUtcIso } from "@/lib/services/org-time";
 import type { Activity, ActivityId, UserId } from "@/lib/types";
 import { CrmError } from "./shared";
 
@@ -30,7 +31,10 @@ export async function updateActivity(
       body: command.body,
       outcome: command.outcome,
       nextAction: command.nextAction,
-      nextActionAt: command.nextActionAt,
+      // Edit path normalizes the same way as create (Step-4 fix 1).
+      nextActionAt: command.nextActionAt
+        ? orgLocalToUtcIso(command.nextActionAt)
+        : command.nextActionAt,
     },
     command.actor,
   );

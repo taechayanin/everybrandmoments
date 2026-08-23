@@ -172,7 +172,7 @@ describe("ContactRepository", () => {
   });
 
   it("create and update round-trip", async () => {
-    const created = await repos.contacts.create({
+    const { contact: created } = await repos.contacts.create({
       accountId: ACC,
       name: "คุณใหม่",
       jobTitle: "Procurement Manager",
@@ -185,6 +185,24 @@ describe("ContactRepository", () => {
     expect(updated?.influenceLevel).toBe("HIGH");
     expect(updated?.phone).toBe("081-000-0000");
     expect(updated?.buyingRole).toBe("PROCUREMENT");
+  });
+});
+
+describe("ContactRepository idempotency (Step-4 fix 2)", () => {
+  it("a retried create with the same clientRequestId yields one contact", async () => {
+    const input = {
+      accountId: ACC,
+      name: "คุณซ้ำ ทดสอบ",
+      buyingRole: "CHAMPION" as const,
+      clientRequestId: "contact-req-fixed-1",
+    };
+    const first = await repos.contacts.create(input);
+    const retry = await repos.contacts.create(input);
+    expect(first.created).toBe(true);
+    expect(retry.created).toBe(false);
+    expect(retry.contact.id).toBe(first.contact.id);
+    const all = await repos.contacts.listByAccount(ACC);
+    expect(all.filter((c) => c.name === "คุณซ้ำ ทดสอบ")).toHaveLength(1);
   });
 });
 

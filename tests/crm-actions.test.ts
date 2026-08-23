@@ -121,7 +121,25 @@ describe("contact + task actions", () => {
       buyingRole: "PROCUREMENT",
       clientRequestId: rid(),
     });
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, deduped: false });
+  });
+
+  it("duplicate Create Contact submission creates exactly one contact (fix 2)", async () => {
+    const payload = {
+      accountId: "ACC-013",
+      name: "คุณกันซ้ำ",
+      clientRequestId: "contact-action-fixed-1",
+    };
+    const first = await createContactAction(payload);
+    const retry = await createContactAction(payload);
+    expect(first).toEqual({ ok: true, deduped: false });
+    expect(retry).toEqual({ ok: true, deduped: true });
+    const { createMockRepositories } = await import(
+      "@/lib/infrastructure/mock/repositories"
+    );
+    const repos = createMockRepositories();
+    const contacts = await repos.contacts.listByAccount("ACC-013" as never);
+    expect(contacts.filter((c) => c.name === "คุณกันซ้ำ")).toHaveLength(1);
   });
 
   it("Complete Task succeeds and a retry reports deduped", async () => {

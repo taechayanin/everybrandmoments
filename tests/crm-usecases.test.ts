@@ -256,6 +256,56 @@ describe("task use cases", () => {
   });
 });
 
+describe("UTC normalization (Step-4 fix 1)", () => {
+  it("org-local wall time converts to UTC (Asia/Bangkok = UTC+7)", async () => {
+    const { orgLocalToUtcIso } = await import("@/lib/services/org-time");
+    expect(orgLocalToUtcIso("2026-08-23T13:15")).toBe("2026-08-23T06:15:00.000Z");
+  });
+
+  it("crosses the date boundary correctly (00:30 Bangkok = 17:30Z prior day)", async () => {
+    const { orgLocalToUtcIso } = await import("@/lib/services/org-time");
+    expect(orgLocalToUtcIso("2026-08-23T00:30")).toBe("2026-08-22T17:30:00.000Z");
+  });
+
+  it("UTC renders back to Bangkok local, incl. boundary crossing", async () => {
+    const { utcToOrgLocalInput } = await import("@/lib/services/org-time");
+    expect(utcToOrgLocalInput("2026-08-23T06:15:00.000Z")).toBe("2026-08-23T13:15");
+    expect(utcToOrgLocalInput("2026-08-22T17:30:00.000Z")).toBe("2026-08-23T00:30");
+  });
+
+  it("edit/reload round-trip is lossless", async () => {
+    const { orgLocalToUtcIso, utcToOrgLocalInput } = await import(
+      "@/lib/services/org-time"
+    );
+    for (const local of ["2026-01-01T00:00", "2026-08-23T23:59", "2026-12-31T07:00"]) {
+      expect(utcToOrgLocalInput(orgLocalToUtcIso(local))).toBe(local);
+    }
+  });
+
+  it("zone-carrying inputs pass through unreinterpreted", async () => {
+    const { orgLocalToUtcIso } = await import("@/lib/services/org-time");
+    expect(orgLocalToUtcIso("2026-08-23T04:00:00Z")).toBe("2026-08-23T04:00:00.000Z");
+    expect(orgLocalToUtcIso("2026-08-23T11:00:00+07:00")).toBe("2026-08-23T04:00:00.000Z");
+  });
+
+  it("createNote persists UTC and derives the org-local due date", async () => {
+    const result = await createNote({
+      accountId: "ACC-006",
+      body: "utc normalization",
+      occurredAt: "2026-08-23T13:15", // Bangkok wall time from the composer
+      nextAction: "โทรกลับ",
+      nextActionAt: "2026-08-24T00:30", // Bangkok — UTC จะเป็นวันที่ 23
+      createFollowUp: true,
+      clientRequestId: rid(),
+      createdBy: OWNER,
+    });
+    expect(result.activity.occurredAt).toBe("2026-08-23T06:15:00.000Z");
+    expect(result.activity.nextActionAt).toBe("2026-08-23T17:30:00.000Z");
+    // Due DATE stays the Bangkok calendar day the user picked.
+    expect(result.task?.dueDate).toBe("2026-08-24");
+  });
+});
+
 describe("organization timezone boundaries (P1 fix 3)", () => {
   it("orgLocalDate flips to the next day at Bangkok midnight, not UTC midnight", async () => {
     const { orgLocalDate } = await import("@/lib/services/org-time");

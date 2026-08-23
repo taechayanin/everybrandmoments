@@ -309,16 +309,23 @@ export interface CreateCrmContactInput {
   isPrimary?: boolean;
   status?: ContactStatus;
   notes?: string;
+  /** Idempotency key — a retried create resolves to the existing contact. */
+  clientRequestId?: string;
 }
 
-export type UpdateCrmContactPatch = Partial<Omit<CreateCrmContactInput, "accountId">>;
+export type UpdateCrmContactPatch = Partial<
+  Omit<CreateCrmContactInput, "accountId" | "clientRequestId">
+>;
 
 export interface ContactRepository {
   getById(id: ContactId): Promise<CrmContact | null>;
   getByIds(ids: ContactId[]): Promise<CrmContact[]>;
   /** One bounded query per account (spec §53). */
   listByAccount(accountId: AccountId): Promise<CrmContact[]>;
-  create(input: CreateCrmContactInput): Promise<CrmContact>;
+  /** Idempotent on clientRequestId; { created: false } = key already existed. */
+  create(
+    input: CreateCrmContactInput,
+  ): Promise<{ contact: CrmContact; created: boolean }>;
   update(id: ContactId, patch: UpdateCrmContactPatch): Promise<CrmContact | null>;
 }
 

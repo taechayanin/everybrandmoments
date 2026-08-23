@@ -3,7 +3,7 @@
 // Contacts + Buying Committee (spec §15–§16): who are we talking to, and who
 // decides. Create/edit go through server actions only.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Pencil, Phone, Plus, Star } from "lucide-react";
 import { ADD_CONTACT_EVENT } from "./quick-actions";
@@ -54,7 +54,7 @@ export function ContactsPanel({
   const [form, setForm] = useState<FormState>(EMPTY);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestId = useMemo(() => crypto.randomUUID(), []);
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
 
   // Quick Actions "👤 Contact" opens this drawer via a DOM event so the page
   // layout stays server-rendered (no shared client parent needed).
@@ -100,6 +100,7 @@ export function ContactsPanel({
         : await updateContactAction({ contactId: (editing as CrmContact).id, ...fields });
     setPending(false);
     if (result.ok) {
+      setRequestId(crypto.randomUUID());
       setEditing(null);
       router.refresh();
     } else {

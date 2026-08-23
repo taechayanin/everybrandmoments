@@ -9,6 +9,7 @@ import type {
   UserId,
 } from "@/lib/types";
 import { DEFAULT_TASK_PRIORITY } from "@/lib/domain/activity";
+import { orgLocalDate, orgLocalToUtcIso } from "@/lib/services/org-time";
 
 /** Business-rule violation surfaced to the UI as a readable message. */
 export class CrmError extends Error {}
@@ -57,6 +58,21 @@ export async function assertInteractionOwnership(
   }
 }
 
+/**
+ * UTC normalization at the application boundary (Step-4 review fix 1):
+ * composer inputs are org-local wall time; persistence is always UTC ISO.
+ * Values already carrying a zone pass through converted, never reinterpreted.
+ */
+export function normalizeInteractionTimes<
+  T extends { occurredAt?: string; nextActionAt?: string },
+>(input: T): T {
+  return {
+    ...input,
+    ...(input.occurredAt && { occurredAt: orgLocalToUtcIso(input.occurredAt) }),
+    ...(input.nextActionAt && { nextActionAt: orgLocalToUtcIso(input.nextActionAt) }),
+  };
+}
+
 export interface FollowUpIntent {
   createFollowUp?: boolean;
   nextAction?: string;
@@ -100,7 +116,8 @@ export function buildFollowUpTask(
     opportunityId: input.opportunityId as OpportunityId | undefined,
     momentEventId: input.momentEventId as MomentEventId | undefined,
     title: input.nextAction,
-    dueDate: input.nextActionAt.slice(0, 10),
+    // Due DATE is the org-local calendar day of the (UTC) follow-up instant.
+    dueDate: orgLocalDate(new Date(orgLocalToUtcIso(input.nextActionAt))),
     assigneeId: actor,
     createdBy: actor,
     priority: DEFAULT_TASK_PRIORITY,
