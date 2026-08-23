@@ -80,30 +80,50 @@ async function handleDeadLetters(
 ): Promise<void> {
   for (const message of batch.messages) {
     const parsed = JobSchema.safeParse(message.body);
-    if (parsed.success && parsed.data.jobType === "DETECT_MOMENT") {
-      const job = parsed.data;
-      // Guard `!= 'processed'` — a redelivered copy of an already-completed
-      // job must not flip its signals back to failed.
-      await env.DB.prepare(
-        `UPDATE moment_signals SET processing_status = 'failed'
-         WHERE organization_id = ? AND account_id = ?
-           AND id IN (${job.signalIds.map(() => "?").join(", ")})
-           AND processing_status != 'processed'`,
-      )
-        .bind(job.organizationId, job.accountId, ...job.signalIds)
-        .run();
+    if (!parsed.success) {
+      // Permanently malformed — log and ack; retrying cannot fix it.
+      console.error(JSON.stringify({ event: "job_dead_lettered", jobType: "invalid" }));
+      message.ack();
+      continue;
     }
-    console.error(
-      JSON.stringify({
-        event: "job_dead_lettered",
-        jobType: parsed.success ? parsed.data.jobType : "invalid",
-        accountId:
-          parsed.success && parsed.data.jobType === "DETECT_MOMENT"
-            ? parsed.data.accountId
-            : undefined,
-      }),
-    );
-    message.ack(); // dead letters are terminal — never retry from the DLQ
+    try {
+      if (parsed.data.jobType === "DETECT_MOMENT") {
+        const job = parsed.data;
+        // Guard `!= 'processed'` — a redelivered copy of an already-completed
+        // job must not flip its signals back to failed. The statement is
+        // idempotent, so DLQ redelivery after a transient failure is safe.
+        await env.DB.prepare(
+          `UPDATE moment_signals SET processing_status = 'failed'
+           WHERE organization_id = ? AND account_id = ?
+             AND id IN (${job.signalIds.map(() => "?").join(", ")})
+             AND processing_status != 'processed'`,
+        )
+          .bind(job.organizationId, job.accountId, ...job.signalIds)
+          .run();
+      }
+      console.error(
+        JSON.stringify({
+          event: "job_dead_lettered",
+          jobType: parsed.data.jobType,
+          accountId:
+            parsed.data.jobType === "DETECT_MOMENT"
+              ? parsed.data.accountId
+              : undefined,
+        }),
+      );
+      message.ack();
+    } catch (err) {
+      // Transient D1 failure — let the queue redeliver (max_retries 3).
+      console.error(
+        JSON.stringify({
+          event: "dlq_mark_failed_error",
+          jobType: parsed.data.jobType,
+          attempts: message.attempts,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      message.retry();
+    }
   }
 }
 

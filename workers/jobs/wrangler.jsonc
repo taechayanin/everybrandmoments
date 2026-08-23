@@ -34,10 +34,12 @@
       },
       {
         // Dead-letter consumer: marks orphaned signals `failed` (src/index.ts).
+        // Retries cover transient D1 failures; invalid payloads are logged
+        // and acked in the handler, so only real errors ever retry.
         "queue": "everybrandmoments-jobs-dlq",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
-        "max_retries": 0
+        "max_retries": 3
       }
     ]
   },
