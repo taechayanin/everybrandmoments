@@ -226,9 +226,9 @@ describe("analysis lifecycle state machine (review round 2)", () => {
 
   it("missing API key / 401 / 403 become BLOCKED — never PROCESSED", async () => {
     const { decideAnalysisTransition } = await import("@/lib/domain/analysis-lifecycle");
-    const { analyzeWithClaude } = await import("../workers/jobs/src/analyze-activity");
+    const { analyzeWithAI } = await import("../workers/jobs/src/analyze-activity");
     // No key: the model call itself reports the config gap...
-    const outcome = await analyzeWithClaude({}, {
+    const outcome = await analyzeWithAI({}, {
       activityType: "NOTE", title: null, body: "x", outcome: null,
       occurredAt: "2026-08-23T00:00:00Z",
     });

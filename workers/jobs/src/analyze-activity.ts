@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { MOMENT_CODES } from "../../../lib/domain/moment";
 import {
   decideAnalysisTransition,
@@ -13,7 +13,7 @@ import type { AnalyzeActivityJob } from "../../../lib/jobs/contracts";
 // SUGGESTION row only — a human accepts/edits/ignores; nothing here mutates
 // moments, tasks, opportunities, or account data.
 
-const DEFAULT_MODEL = "claude-opus-5";
+const DEFAULT_MODEL = "gpt-5-mini";
 const ANALYZER_VERSION = "1.0.0";
 export const MAX_ACTIVITY_CHARS = 4000;
 
@@ -36,22 +36,20 @@ export const ANALYSIS_OUTPUT_SCHEMA = {
       items: { type: "string" },
       description: "Concrete customer needs mentioned (products, services), Thai",
     },
-    budgetMin: { type: "number", description: "Lower budget bound in THB if stated" },
-    budgetMax: { type: "number", description: "Upper budget bound in THB if stated" },
+    budgetMin: { type: ["number", "null"], description: "Lower budget bound in THB if stated, else null" },
+    budgetMax: { type: ["number", "null"], description: "Upper budget bound in THB if stated, else null" },
     expectedDate: {
-      type: "string",
-      format: "date",
-      description: "ISO date (YYYY-MM-DD) the customer's event/decision is expected, if stated",
+      type: ["string", "null"],
+      description: "ISO date (YYYY-MM-DD) the customer's event/decision is expected, else null",
     },
     decisionMakerDetected: {
-      type: "boolean",
+      type: ["boolean", "null"],
       description: "true if the conversation involves or identifies a decision maker",
     },
-    nextAction: { type: "string", description: "The follow-up the salesperson should do, Thai" },
+    nextAction: { type: ["string", "null"], description: "The follow-up the salesperson should do (Thai), else null" },
     nextActionDate: {
-      type: "string",
-      format: "date",
-      description: "ISO date the follow-up should happen, if inferable",
+      type: ["string", "null"],
+      description: "ISO date the follow-up should happen, else null",
     },
     recommendedSolutionIds: {
       type: "array",
@@ -63,9 +61,22 @@ export const ANALYSIS_OUTPUT_SCHEMA = {
       description: "0.0-1.0 — how strongly the text supports the detected moments",
     },
   },
-  required: ["summary", "detectedMomentCodes", "needs", "recommendedSolutionIds", "confidence"],
+  // OpenAI strict mode: every key required; optionality is expressed as null.
+  required: [
+    "summary", "detectedMomentCodes", "needs", "budgetMin", "budgetMax",
+    "expectedDate", "decisionMakerDetected", "nextAction", "nextActionDate",
+    "recommendedSolutionIds", "confidence",
+  ],
   additionalProperties: false,
 } as const;
+
+/** Strict-mode nulls → absent fields, so zod optionality stays unchanged. */
+export function stripNulls(json: unknown): unknown {
+  if (typeof json !== "object" || json === null || Array.isArray(json)) return json;
+  return Object.fromEntries(
+    Object.entries(json as Record<string, unknown>).filter(([, v]) => v !== null),
+  );
+}
 
 export const ANALYSIS_SYSTEM_PROMPT = `You are the Conversation Intelligence engine for Every Brand Moments — a Thai B2B gifting, merchandise, and brand-production company.
 
@@ -117,37 +128,43 @@ export type AiAnalysisOutcome =
   | { type: "retry"; error: Error; category: "config" | "transient" };
 
 export interface AiAnalyzerEnv {
-  ANTHROPIC_API_KEY?: string;
+  OPENAI_API_KEY?: string;
   AI_MODEL?: string;
 }
 
-export async function analyzeWithClaude(
+export async function analyzeWithAI(
   env: AiAnalyzerEnv,
   activity: ActivityForAnalysis,
 ): Promise<AiAnalysisOutcome> {
-  // No key = feature not enabled — the CRM write is long since safe.
-  if (!env.ANTHROPIC_API_KEY) return { type: "skip", reason: "no_api_key" };
+  // No key = configuration gap — the lifecycle maps this to BLOCKED.
+  if (!env.OPENAI_API_KEY) return { type: "skip", reason: "no_api_key" };
 
   const model = env.AI_MODEL ?? DEFAULT_MODEL;
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
   try {
-    const response = await client.beta.messages.create({
+    const completion = await client.chat.completions.create({
       model,
-      max_tokens: 4096,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      system: ANALYSIS_SYSTEM_PROMPT,
-      output_config: {
-        format: { type: "json_schema", schema: ANALYSIS_OUTPUT_SCHEMA },
+      max_completion_tokens: 2048,
+      messages: [
+        { role: "system", content: ANALYSIS_SYSTEM_PROMPT },
+        { role: "user", content: buildAnalysisUserMessage(activity) },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "activity_analysis",
+          strict: true,
+          schema: ANALYSIS_OUTPUT_SCHEMA,
+        },
       },
-      messages: [{ role: "user", content: buildAnalysisUserMessage(activity) }],
     });
 
-    if (response.stop_reason === "refusal") {
+    const message = completion.choices[0]?.message;
+    if (message?.refusal) {
       return { type: "skip", reason: "refusal" };
     }
-    const text = response.content.find((b) => b.type === "text")?.text;
+    const text = message?.content;
     if (!text) return { type: "skip", reason: "empty_output" };
 
     let json: unknown;
@@ -156,14 +173,14 @@ export async function analyzeWithClaude(
     } catch {
       return { type: "skip", reason: "invalid_output" };
     }
-    const parsed = ActivityAnalysisSchema.safeParse(json);
+    const parsed = ActivityAnalysisSchema.safeParse(stripNulls(json));
     if (!parsed.success) {
       console.warn(
         JSON.stringify({ event: "ai_analysis_invalid", error: parsed.error.message }),
       );
       return { type: "skip", reason: "invalid_output" };
     }
-    return { type: "success", result: parsed.data, model: response.model };
+    return { type: "success", result: parsed.data, model: completion.model };
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     return { type: "retry", error, category: classifyAnalysisError(err) };
@@ -267,7 +284,7 @@ export async function analyzeActivityJob(
     .bind(attempt, new Date().toISOString(), job.organizationId, job.accountId, job.activityId)
     .run();
 
-  const outcome = await analyzeWithClaude(env, {
+  const outcome = await analyzeWithAI(env, {
     activityType: activity.activity_type,
     title: activity.title,
     body: activity.body,

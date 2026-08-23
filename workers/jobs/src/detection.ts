@@ -1,7 +1,7 @@
 import { ACTIVE_MOMENT_STATUSES, type MomentCode } from "../../../lib/domain/moment";
 import { momentActivityKey } from "../../../lib/domain/activity";
 import { signalOccurrenceKey } from "../../../lib/jobs/occurrence";
-import { detectWithClaude, type AiDetectorEnv } from "./ai-detection";
+import { detectWithAI, type AiDetectorEnv } from "./ai-detection";
 import {
   DetectionResultSchema,
   type DetectMomentJob,
@@ -125,7 +125,7 @@ export async function detectMomentFromSignals(
   // Level 3 (AI) when an API key is configured; Level 2 keyword rules
   // otherwise. AI refusal/invalid output falls back to rules; transient AI
   // errors throw so the queue retries (review 🟡 §1).
-  const aiOutcome = await detectWithClaude(
+  const aiOutcome = await detectWithAI(
     env,
     signals.results.map((s) => ({
       sourceType: s.source_type,

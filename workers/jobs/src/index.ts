@@ -8,9 +8,9 @@ export interface JobsEnv {
   DB: D1Database;
   /** Producer for re-enqueueing orphaned signals (reconciliation). */
   MOMENT_JOBS: Queue;
-  /** Enables Level 3 AI detection when set (wrangler secret put ANTHROPIC_API_KEY). */
-  ANTHROPIC_API_KEY?: string;
-  /** Override the detection model (default claude-opus-5). */
+  /** Enables AI detection + activity analysis (wrangler secret put OPENAI_API_KEY). */
+  OPENAI_API_KEY?: string;
+  /** Override the model (default gpt-5-mini). */
   AI_MODEL?: string;
 }
 
