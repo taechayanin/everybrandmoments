@@ -10,8 +10,10 @@ export interface JobsEnv {
   MOMENT_JOBS: Queue;
   /** Enables AI detection + activity analysis (wrangler secret put OPENAI_API_KEY). */
   OPENAI_API_KEY?: string;
-  /** Override the model (default gpt-5-mini). */
+  /** Override the model (default gpt-5.6-luna). */
   AI_MODEL?: string;
+  /** Reasoning effort override (default low). */
+  AI_REASONING_EFFORT?: string;
 }
 
 // Cron slots (UTC) — see wrangler.jsonc triggers.

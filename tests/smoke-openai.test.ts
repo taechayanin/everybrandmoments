@@ -15,10 +15,11 @@ import { detectWithAI } from "../workers/jobs/src/ai-detection";
 // log, or assertion here). Normal test runs skip this file entirely.
 
 const KEY = process.env.OPENAI_API_KEY;
-const MODEL = process.env.AI_MODEL; // undefined = provider default gpt-5-mini
+const MODEL = process.env.AI_MODEL; // undefined = provider default gpt-5.6-luna
+const EFFORT = process.env.AI_REASONING_EFFORT; // undefined = default low
 
 describe.skipIf(!KEY)("REAL OpenAI smoke — provider gate", () => {
-  const env = { OPENAI_API_KEY: KEY, AI_MODEL: MODEL };
+  const env = { OPENAI_API_KEY: KEY, AI_MODEL: MODEL, AI_REASONING_EFFORT: EFFORT };
 
   it("activity analysis: auth + strict structured output + zod + catalogs", async () => {
     const started = Date.now();
@@ -38,7 +39,7 @@ describe.skipIf(!KEY)("REAL OpenAI smoke — provider gate", () => {
     expect(outcome.type).toBe("success");
     if (outcome.type !== "success") return;
     // Model check — no silent fallback to a different family.
-    const expected = MODEL ?? "gpt-5-mini";
+    const expected = MODEL ?? "gpt-5.6-luna";
     expect(outcome.model.startsWith(expected)).toBe(true);
     // Zod already passed inside analyzeWithAI; sanity-check the content.
     expect(outcome.result.confidence).toBeGreaterThan(0);
@@ -55,6 +56,7 @@ describe.skipIf(!KEY)("REAL OpenAI smoke — provider gate", () => {
     console.log(
       JSON.stringify({
         smoke: "activity",
+        effort: EFFORT ?? "low",
         model: outcome.model,
         ms,
         usage: outcome.usage,
@@ -88,6 +90,7 @@ describe.skipIf(!KEY)("REAL OpenAI smoke — provider gate", () => {
     console.log(
       JSON.stringify({
         smoke: "detection",
+        effort: EFFORT ?? "low",
         model: outcome.model,
         ms,
         usage: outcome.usage,

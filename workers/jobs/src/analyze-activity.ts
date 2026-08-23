@@ -13,7 +13,8 @@ import type { AnalyzeActivityJob } from "../../../lib/jobs/contracts";
 // SUGGESTION row only — a human accepts/edits/ignores; nothing here mutates
 // moments, tasks, opportunities, or account data.
 
-const DEFAULT_MODEL = "gpt-5-mini";
+const DEFAULT_MODEL = "gpt-5.6-luna";
+const DEFAULT_REASONING_EFFORT = "low";
 const ANALYZER_VERSION = "1.0.0";
 export const MAX_ACTIVITY_CHARS = 4000;
 
@@ -135,6 +136,8 @@ export type AiAnalysisOutcome =
 export interface AiAnalyzerEnv {
   OPENAI_API_KEY?: string;
   AI_MODEL?: string;
+  /** Reasoning effort ("none" | "low" | ...) — default low. */
+  AI_REASONING_EFFORT?: string;
 }
 
 export async function analyzeWithAI(
@@ -150,6 +153,10 @@ export async function analyzeWithAI(
   try {
     const completion = await client.chat.completions.create({
       model,
+      // Config-driven, never hardcoded in business logic; "none" is valid on
+      // 5.1+ models but not yet in the SDK enum, hence the cast.
+      reasoning_effort: (env.AI_REASONING_EFFORT ??
+        DEFAULT_REASONING_EFFORT) as OpenAI.ReasoningEffort,
       max_completion_tokens: 2048,
       messages: [
         { role: "system", content: ANALYSIS_SYSTEM_PROMPT },
