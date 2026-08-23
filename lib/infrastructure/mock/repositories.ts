@@ -1,7 +1,13 @@
 import type {
   Account,
   AccountId,
+  Activity,
+  ActivityId,
+  ActivitySuggestion,
   Appointment,
+  ContactId,
+  CrmContact,
+  CrmTask,
   CustomerHealth,
   MasterMoment,
   MomentCode,
@@ -13,18 +19,30 @@ import type {
   OpportunityId,
   Solution,
   SolutionId,
+  SuggestionId,
+  TaskId,
   User,
   UserId,
 } from "@/lib/types";
 import { isActiveMomentStatus } from "@/lib/domain/moment";
 import { priorityOf, totalScore } from "@/lib/domain/score";
+import { followUpTaskKey } from "@/lib/domain/activity";
 import type {
   AccountRepository,
   AccountStats,
+  ActivityListOptions,
+  ActivityRepository,
   AppointmentRepository,
+  ContactRepository,
+  CreateActivityInput,
+  CreateCrmContactInput,
+  CreateCrmTaskInput,
   CreateMomentInput,
   CreateOpportunityInput,
   CreateSignalInput,
+  CreateSuggestionInput,
+  InteractionWriteRepository,
+  LogInteractionInput,
   MasterMomentRepository,
   MomentListFilter,
   MomentRadarQuery,
@@ -35,6 +53,11 @@ import type {
   Repositories,
   SignalRepository,
   SolutionRepository,
+  SuggestionRepository,
+  TaskDueBand,
+  TaskRepository,
+  UpdateActivityPatch,
+  UpdateCrmContactPatch,
   UserRepository,
 } from "@/lib/repositories";
 import { MASTER_MOMENTS } from "@/lib/domain/master-moments";
@@ -322,7 +345,363 @@ class MockAppointmentRepository implements AppointmentRepository {
   }
 }
 
+// ---------- CRM Activity Layer (sprint Step 2) ----------
+// In-memory mirrors of the D1 semantics: same idempotency keys, same keyset
+// pagination order, same band rules — the repo tests pin both adapters to
+// this behavior.
+
+const crmActivities: Activity[] = [];
+const crmTasks: CrmTask[] = [];
+const crmSuggestions: ActivitySuggestion[] = [];
+// Seeded from the embedded account contacts, matching seed/seed.sql ids.
+const crmContacts: CrmContact[] = ACCOUNTS.flatMap((a) =>
+  a.contacts.map((c, i) => ({
+    id: `CT-${a.id}-${i + 1}` as ContactId,
+    accountId: a.id,
+    name: c.name,
+    jobTitle: c.role || null,
+    department: null,
+    email: null,
+    phone: c.phone || null,
+    lineId: null,
+    buyingRole: i === 0 ? ("DECISION_MAKER" as const) : null,
+    influenceLevel: null,
+    isPrimary: i === 0,
+    status: "ACTIVE" as const,
+    notes: null,
+    createdAt: "2026-08-22T00:00:00Z",
+    updatedAt: "2026-08-22T00:00:00Z",
+  })),
+);
+
+function byOccurredDesc(a: Activity, b: Activity): number {
+  return b.occurredAt === a.occurredAt
+    ? b.id.localeCompare(a.id)
+    : b.occurredAt.localeCompare(a.occurredAt);
+}
+
+function buildActivity(id: ActivityId, input: CreateActivityInput, now: string): Activity {
+  return {
+    id,
+    accountId: input.accountId,
+    contactId: input.contactId ?? null,
+    opportunityId: input.opportunityId ?? null,
+    momentEventId: input.momentEventId ?? null,
+    activityType: input.activityType,
+    title: input.title ?? null,
+    body: input.body ?? null,
+    outcome: input.outcome ?? null,
+    nextAction: input.nextAction ?? null,
+    nextActionAt: input.nextActionAt ?? null,
+    occurredAt: input.occurredAt,
+    createdBy: input.createdBy,
+    createdAt: now,
+    updatedAt: now,
+    metadata: input.metadata ?? null,
+    deletedAt: null,
+  };
+}
+
+function buildTask(id: TaskId, input: CreateCrmTaskInput, now: string): CrmTask {
+  return {
+    id,
+    accountId: input.accountId ?? null,
+    contactId: input.contactId ?? null,
+    momentEventId: input.momentEventId ?? null,
+    opportunityId: input.opportunityId ?? null,
+    title: input.title,
+    description: input.description ?? null,
+    dueDate: input.dueDate ?? null,
+    assigneeId: input.assigneeId ?? null,
+    createdBy: input.createdBy ?? null,
+    priority: input.priority ?? "NORMAL",
+    status: "OPEN",
+    completedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+const activityRequestKeys = new Map<string, ActivityId>();
+const taskRequestKeys = new Map<string, TaskId>();
+
+class MockActivityRepository implements ActivityRepository {
+  async getById(id: ActivityId): Promise<Activity | null> {
+    return crmActivities.find((a) => a.id === id && !a.deletedAt) ?? null;
+  }
+
+  async listByAccount(
+    accountId: AccountId,
+    options: ActivityListOptions = {},
+  ): Promise<Paginated<Activity>> {
+    const limit = options.limit ?? 20;
+    let items = crmActivities
+      .filter((a) => a.accountId === accountId && !a.deletedAt)
+      .sort(byOccurredDesc);
+    if (options.types && options.types.length > 0) {
+      items = items.filter((a) => options.types!.includes(a.activityType));
+    }
+    if (options.cursor) {
+      const at = options.cursor.indexOf("|");
+      const cOccurred = options.cursor.slice(0, at);
+      const cId = options.cursor.slice(at + 1);
+      items = items.filter(
+        (a) =>
+          a.occurredAt < cOccurred || (a.occurredAt === cOccurred && a.id < cId),
+      );
+    }
+    const page = items.slice(0, limit);
+    const last = page[page.length - 1];
+    return {
+      items: page,
+      nextCursor:
+        items.length > limit && last ? `${last.occurredAt}|${last.id}` : undefined,
+    };
+  }
+
+  async listRecentByAccounts(
+    accountIds: AccountId[],
+    limitPerAccount = 5,
+  ): Promise<Map<AccountId, Activity[]>> {
+    const out = new Map<AccountId, Activity[]>();
+    for (const id of accountIds) {
+      const page = await this.listByAccount(id, { limit: limitPerAccount });
+      if (page.items.length > 0) out.set(id, page.items);
+    }
+    return out;
+  }
+
+  async create(
+    input: CreateActivityInput,
+  ): Promise<{ activity: Activity; created: boolean }> {
+    if (input.clientRequestId) {
+      const existing = activityRequestKeys.get(input.clientRequestId);
+      if (existing) {
+        const activity = crmActivities.find((a) => a.id === existing)!;
+        return { activity, created: false };
+      }
+    }
+    const activity = buildActivity(
+      `ACT-${crypto.randomUUID()}` as ActivityId,
+      input,
+      new Date().toISOString(),
+    );
+    crmActivities.push(activity);
+    if (input.clientRequestId) activityRequestKeys.set(input.clientRequestId, activity.id);
+    return { activity, created: true };
+  }
+
+  async update(id: ActivityId, patch: UpdateActivityPatch): Promise<Activity | null> {
+    const a = crmActivities.find((x) => x.id === id && !x.deletedAt);
+    if (!a) return null;
+    if (patch.body !== undefined) a.body = patch.body;
+    if (patch.outcome !== undefined) a.outcome = patch.outcome;
+    if (patch.nextAction !== undefined) a.nextAction = patch.nextAction;
+    if (patch.nextActionAt !== undefined) a.nextActionAt = patch.nextActionAt;
+    a.updatedAt = new Date().toISOString();
+    return a;
+  }
+
+  async softDelete(id: ActivityId, userId: UserId): Promise<boolean> {
+    void userId;
+    const a = crmActivities.find((x) => x.id === id && !x.deletedAt);
+    if (!a) return false;
+    a.deletedAt = new Date().toISOString();
+    return true;
+  }
+
+  async lastActivityByOpportunities(ids: OpportunityId[]): Promise<Map<string, string>> {
+    const wanted = new Set<string>(ids);
+    const out = new Map<string, string>();
+    for (const a of crmActivities) {
+      if (!a.opportunityId || a.deletedAt || !wanted.has(a.opportunityId)) continue;
+      const prev = out.get(a.opportunityId);
+      if (!prev || a.occurredAt > prev) out.set(a.opportunityId, a.occurredAt);
+    }
+    return out;
+  }
+}
+
+class MockTaskRepository implements TaskRepository {
+  async getById(id: TaskId): Promise<CrmTask | null> {
+    return crmTasks.find((t) => t.id === id) ?? null;
+  }
+
+  async create(input: CreateCrmTaskInput): Promise<{ task: CrmTask; created: boolean }> {
+    if (input.clientRequestId) {
+      const existing = taskRequestKeys.get(input.clientRequestId);
+      if (existing) {
+        const task = crmTasks.find((t) => t.id === existing)!;
+        return { task, created: false };
+      }
+    }
+    const task = buildTask(
+      `TSK-${crypto.randomUUID()}` as TaskId,
+      input,
+      new Date().toISOString(),
+    );
+    crmTasks.push(task);
+    if (input.clientRequestId) taskRequestKeys.set(input.clientRequestId, task.id);
+    return { task, created: true };
+  }
+
+  async complete(id: TaskId): Promise<boolean> {
+    const t = crmTasks.find((x) => x.id === id);
+    if (!t || (t.status !== "OPEN" && t.status !== "IN_PROGRESS")) return false;
+    t.status = "DONE";
+    t.completedAt = new Date().toISOString();
+    t.updatedAt = t.completedAt;
+    return true;
+  }
+
+  async listByAssignee(
+    assigneeId: UserId,
+    band: TaskDueBand,
+    today: string,
+    limit: number,
+  ): Promise<CrmTask[]> {
+    return crmTasks
+      .filter((t) => {
+        if (t.assigneeId !== assigneeId || !t.dueDate) return false;
+        if (t.status !== "OPEN" && t.status !== "IN_PROGRESS") return false;
+        if (band === "overdue") return t.dueDate < today;
+        if (band === "today") return t.dueDate === today;
+        return t.dueDate > today;
+      })
+      .sort((a, b) => (a.dueDate! < b.dueDate! ? -1 : 1))
+      .slice(0, limit);
+  }
+
+  async listByAccount(accountId: AccountId, limit: number): Promise<CrmTask[]> {
+    return crmTasks.filter((t) => t.accountId === accountId).slice(0, limit);
+  }
+
+  async listByOpportunity(opportunityId: OpportunityId, limit: number): Promise<CrmTask[]> {
+    return crmTasks.filter((t) => t.opportunityId === opportunityId).slice(0, limit);
+  }
+}
+
+class MockContactRepository implements ContactRepository {
+  async getById(id: ContactId): Promise<CrmContact | null> {
+    return crmContacts.find((c) => c.id === id) ?? null;
+  }
+
+  async getByIds(ids: ContactId[]): Promise<CrmContact[]> {
+    const wanted = new Set(ids);
+    return crmContacts.filter((c) => wanted.has(c.id));
+  }
+
+  async listByAccount(accountId: AccountId): Promise<CrmContact[]> {
+    return crmContacts
+      .filter((c) => c.accountId === accountId)
+      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.name.localeCompare(b.name));
+  }
+
+  async create(input: CreateCrmContactInput): Promise<CrmContact> {
+    const now = new Date().toISOString();
+    const contact: CrmContact = {
+      id: `CT-${crypto.randomUUID()}` as ContactId,
+      accountId: input.accountId,
+      name: input.name,
+      jobTitle: input.jobTitle ?? null,
+      department: input.department ?? null,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
+      lineId: input.lineId ?? null,
+      buyingRole: input.buyingRole ?? null,
+      influenceLevel: input.influenceLevel ?? null,
+      isPrimary: input.isPrimary ?? false,
+      status: input.status ?? "ACTIVE",
+      notes: input.notes ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    crmContacts.push(contact);
+    return contact;
+  }
+
+  async update(id: ContactId, patch: UpdateCrmContactPatch): Promise<CrmContact | null> {
+    const c = crmContacts.find((x) => x.id === id);
+    if (!c) return null;
+    if (patch.name !== undefined) c.name = patch.name;
+    if (patch.jobTitle !== undefined) c.jobTitle = patch.jobTitle ?? null;
+    if (patch.department !== undefined) c.department = patch.department ?? null;
+    if (patch.email !== undefined) c.email = patch.email ?? null;
+    if (patch.phone !== undefined) c.phone = patch.phone ?? null;
+    if (patch.lineId !== undefined) c.lineId = patch.lineId ?? null;
+    if (patch.buyingRole !== undefined) c.buyingRole = patch.buyingRole ?? null;
+    if (patch.influenceLevel !== undefined) c.influenceLevel = patch.influenceLevel ?? null;
+    if (patch.isPrimary !== undefined) c.isPrimary = patch.isPrimary;
+    if (patch.status !== undefined) c.status = patch.status;
+    if (patch.notes !== undefined) c.notes = patch.notes ?? null;
+    c.updatedAt = new Date().toISOString();
+    return c;
+  }
+}
+
+class MockSuggestionRepository implements SuggestionRepository {
+  async getById(id: SuggestionId): Promise<ActivitySuggestion | null> {
+    return crmSuggestions.find((s) => s.id === id) ?? null;
+  }
+
+  async create(input: CreateSuggestionInput): Promise<ActivitySuggestion> {
+    const suggestion: ActivitySuggestion = {
+      id: `SUG-${crypto.randomUUID()}` as SuggestionId,
+      activityId: input.activityId,
+      payload: input.payload,
+      confidence: input.confidence ?? null,
+      status: "PENDING",
+      createdAt: new Date().toISOString(),
+      decidedAt: null,
+      decidedBy: null,
+    };
+    crmSuggestions.push(suggestion);
+    return suggestion;
+  }
+
+  async listPendingByAccount(
+    accountId: AccountId,
+    limit: number,
+  ): Promise<ActivitySuggestion[]> {
+    const accountActivityIds = new Set(
+      crmActivities.filter((a) => a.accountId === accountId).map((a) => a.id),
+    );
+    return crmSuggestions
+      .filter((s) => s.status === "PENDING" && accountActivityIds.has(s.activityId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+  }
+}
+
+class MockInteractionWriteRepository implements InteractionWriteRepository {
+  constructor(
+    private activities: MockActivityRepository,
+    private tasks: MockTaskRepository,
+  ) {}
+
+  async logInteraction(
+    input: LogInteractionInput,
+  ): Promise<{ activity: Activity; task?: CrmTask; deduped: boolean }> {
+    const requestId = input.activity.clientRequestId;
+    if (!requestId) {
+      throw new Error("logInteraction requires activity.clientRequestId");
+    }
+    const { activity, created } = await this.activities.create(input.activity);
+    let task: CrmTask | undefined;
+    if (input.followUpTask) {
+      const res = await this.tasks.create({
+        ...input.followUpTask,
+        clientRequestId: followUpTaskKey(requestId),
+      });
+      task = res.task;
+    }
+    return { activity, task, deduped: !created };
+  }
+}
+
 export function createMockRepositories(): Repositories {
+  const activities = new MockActivityRepository();
+  const tasks = new MockTaskRepository();
   return {
     accounts: new MockAccountRepository(),
     moments: new MockMomentRepository(),
@@ -332,5 +711,10 @@ export function createMockRepositories(): Repositories {
     users: new MockUserRepository(),
     appointments: new MockAppointmentRepository(),
     signals: new MockSignalRepository(),
+    activities,
+    tasks,
+    contacts: new MockContactRepository(),
+    suggestions: new MockSuggestionRepository(),
+    interactions: new MockInteractionWriteRepository(activities, tasks),
   };
 }

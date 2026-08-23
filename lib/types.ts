@@ -5,6 +5,7 @@ export * from "./domain/ids";
 export * from "./domain/score";
 export * from "./domain/moment";
 export * from "./domain/account";
+export * from "./domain/activity";
 export * from "./domain/solution";
 export * from "./domain/opportunity";
 export * from "./domain/user";

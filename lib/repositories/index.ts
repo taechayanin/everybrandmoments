@@ -5,6 +5,20 @@ import type {
   Appointment,
   Channel,
   CustomerHealth,
+  Activity,
+  ActivityId,
+  ActivitySuggestion,
+  ActivityType,
+  ActivityAnalysis,
+  ContactId,
+  CrmContact,
+  ContactRole,
+  ContactStatus,
+  CrmTask,
+  InfluenceLevel,
+  SuggestionId,
+  TaskId,
+  TaskPriority,
   MasterMoment,
   MomentCode,
   MomentEvent,
@@ -179,6 +193,171 @@ export interface OpportunityRepository {
   create(input: CreateOpportunityInput): Promise<Opportunity>;
 }
 
+// ---------- CRM Activities (sprint Step 2) ----------
+
+export interface CreateActivityInput {
+  accountId: AccountId;
+  contactId?: ContactId;
+  opportunityId?: OpportunityId;
+  momentEventId?: MomentEventId;
+  activityType: ActivityType;
+  title?: string;
+  body?: string;
+  outcome?: string;
+  nextAction?: string;
+  nextActionAt?: string;
+  /** ISO datetime the interaction happened (not the row insert time). */
+  occurredAt: string;
+  createdBy: UserId;
+  metadata?: Record<string, unknown>;
+  /** Idempotency key — same key resolves to the existing row, no duplicate. */
+  clientRequestId?: string;
+}
+
+export interface UpdateActivityPatch {
+  body?: string;
+  outcome?: string;
+  nextAction?: string;
+  nextActionAt?: string;
+}
+
+export interface ActivityListOptions {
+  /** Page size — default 20 (plan: keyset, never OFFSET). */
+  limit?: number;
+  /** Keyset cursor from the previous page's nextCursor. */
+  cursor?: string;
+  types?: ActivityType[];
+}
+
+export interface ActivityRepository {
+  getById(id: ActivityId): Promise<Activity | null>;
+  /** Timeline read path — one keyset-paginated query, newest first. */
+  listByAccount(
+    accountId: AccountId,
+    options?: ActivityListOptions,
+  ): Promise<Paginated<Activity>>;
+  /** Batch read model for list pages — bounded per account, never a loop. */
+  listRecentByAccounts(
+    accountIds: AccountId[],
+    limitPerAccount?: number,
+  ): Promise<Map<AccountId, Activity[]>>;
+  /** Idempotent on clientRequestId; { created: false } = key already existed. */
+  create(input: CreateActivityInput): Promise<{ activity: Activity; created: boolean }>;
+  update(id: ActivityId, patch: UpdateActivityPatch): Promise<Activity | null>;
+  /** Soft delete (spec §31) — false if already deleted or not found. */
+  softDelete(id: ActivityId, userId: UserId): Promise<boolean>;
+  /** opportunity_id -> latest occurred_at, one grouped query (spec §27). */
+  lastActivityByOpportunities(ids: OpportunityId[]): Promise<Map<string, string>>;
+}
+
+// ---------- CRM Tasks ----------
+
+export interface CreateCrmTaskInput {
+  accountId?: AccountId;
+  contactId?: ContactId;
+  momentEventId?: MomentEventId;
+  opportunityId?: OpportunityId;
+  title: string;
+  description?: string;
+  dueDate?: string; // ISO date
+  assigneeId?: UserId;
+  createdBy?: UserId;
+  priority?: TaskPriority;
+  /** Idempotency key (stable schemes in lib/domain/activity.ts). */
+  clientRequestId?: string;
+}
+
+export type TaskDueBand = "overdue" | "today" | "upcoming";
+
+export interface TaskRepository {
+  getById(id: TaskId): Promise<CrmTask | null>;
+  /** Idempotent on clientRequestId, like ActivityRepository.create. */
+  create(input: CreateCrmTaskInput): Promise<{ task: CrmTask; created: boolean }>;
+  /** OPEN/IN_PROGRESS -> DONE + completed_at; idempotent (false = no-op). */
+  complete(id: TaskId): Promise<boolean>;
+  /** My Work Today bands (spec §18); `today` = ISO date from the caller's clock. */
+  listByAssignee(
+    assigneeId: UserId,
+    band: TaskDueBand,
+    today: string,
+    limit: number,
+  ): Promise<CrmTask[]>;
+  listByAccount(accountId: AccountId, limit: number): Promise<CrmTask[]>;
+  listByOpportunity(opportunityId: OpportunityId, limit: number): Promise<CrmTask[]>;
+}
+
+// ---------- CRM Contacts ----------
+
+export interface CreateCrmContactInput {
+  accountId: AccountId;
+  name: string;
+  jobTitle?: string;
+  department?: string;
+  email?: string;
+  phone?: string;
+  lineId?: string;
+  buyingRole?: ContactRole;
+  influenceLevel?: InfluenceLevel;
+  isPrimary?: boolean;
+  status?: ContactStatus;
+  notes?: string;
+}
+
+export type UpdateCrmContactPatch = Partial<Omit<CreateCrmContactInput, "accountId">>;
+
+export interface ContactRepository {
+  getById(id: ContactId): Promise<CrmContact | null>;
+  getByIds(ids: ContactId[]): Promise<CrmContact[]>;
+  /** One bounded query per account (spec §53). */
+  listByAccount(accountId: AccountId): Promise<CrmContact[]>;
+  create(input: CreateCrmContactInput): Promise<CrmContact>;
+  update(id: ContactId, patch: UpdateCrmContactPatch): Promise<CrmContact | null>;
+}
+
+// ---------- AI suggestions (reads + create; decisions land in Step 6) ----------
+
+export interface CreateSuggestionInput {
+  activityId: ActivityId;
+  payload: ActivityAnalysis;
+  confidence?: number;
+}
+
+export interface SuggestionRepository {
+  getById(id: SuggestionId): Promise<ActivitySuggestion | null>;
+  create(input: CreateSuggestionInput): Promise<ActivitySuggestion>;
+  listPendingByAccount(accountId: AccountId, limit: number): Promise<ActivitySuggestion[]>;
+}
+
+// ---------- CRM interaction unit-of-work (plan rev 2 item 4) ----------
+
+export interface InteractionAuditInput {
+  entityType: string;
+  entityId: string;
+  action: string;
+  userId: UserId;
+  afterJson?: unknown;
+}
+
+export interface LogInteractionInput {
+  /** clientRequestId is REQUIRED here — the whole unit is keyed off it. */
+  activity: CreateActivityInput;
+  /** Follow-up key derives from the activity (ACTIVITY:<id>:FOLLOWUP). */
+  followUpTask?: Omit<CreateCrmTaskInput, "clientRequestId">;
+  audit?: InteractionAuditInput;
+}
+
+export interface InteractionWriteRepository {
+  /**
+   * Atomically persist one logged interaction: activity + optional follow-up
+   * task + optional audit. D1: single db.batch(); mock: in-memory apply.
+   * Idempotent as a unit — a retried clientRequestId returns the original
+   * rows with deduped: true and writes nothing.
+   */
+  logInteraction(
+    input: LogInteractionInput,
+  ): Promise<{ activity: Activity; task?: CrmTask; deduped: boolean }>;
+}
+
 // ---------- Users / Appointments ----------
 
 export interface UserRepository {
@@ -201,4 +380,9 @@ export interface Repositories {
   users: UserRepository;
   appointments: AppointmentRepository;
   signals: SignalRepository;
+  activities: ActivityRepository;
+  tasks: TaskRepository;
+  contacts: ContactRepository;
+  suggestions: SuggestionRepository;
+  interactions: InteractionWriteRepository;
 }

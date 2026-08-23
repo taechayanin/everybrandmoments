@@ -1,9 +1,19 @@
 import type {
   Account,
   AccountId,
+  Activity,
+  ActivityId,
+  ActivitySuggestion,
+  ActivityType,
   Appointment,
   Channel,
+  ContactId,
+  ContactRole,
+  ContactStatus,
+  CrmContact,
+  CrmTask,
   CustomerHealth,
+  InfluenceLevel,
   MasterMoment,
   MomentCode,
   MomentEvent,
@@ -14,20 +24,35 @@ import type {
   OpportunityId,
   Solution,
   SolutionId,
+  SuggestionId,
+  SuggestionStatus,
+  TaskId,
+  TaskPriority,
+  TaskStatus,
   User,
   UserId,
   WhitespaceCategory,
 } from "@/lib/types";
 import { WHITESPACE_CATEGORIES } from "@/lib/domain/account";
 import { ACTIVE_MOMENT_STATUSES } from "@/lib/domain/moment";
+import { followUpTaskKey } from "@/lib/domain/activity";
 import type {
   AccountRepository,
   AccountSearchInput,
   AccountStats,
+  ActivityListOptions,
+  ActivityRepository,
   AppointmentRepository,
+  ContactRepository,
+  CreateActivityInput,
+  CreateCrmContactInput,
+  CreateCrmTaskInput,
   CreateMomentInput,
   CreateOpportunityInput,
   CreateSignalInput,
+  CreateSuggestionInput,
+  InteractionWriteRepository,
+  LogInteractionInput,
   MasterMomentRepository,
   MomentListFilter,
   MomentRadarQuery,
@@ -38,6 +63,11 @@ import type {
   Repositories,
   SignalRepository,
   SolutionRepository,
+  SuggestionRepository,
+  TaskDueBand,
+  TaskRepository,
+  UpdateActivityPatch,
+  UpdateCrmContactPatch,
   UserRepository,
 } from "@/lib/repositories";
 import { getBindings } from "../env";
@@ -979,6 +1009,603 @@ class D1AppointmentRepository implements AppointmentRepository {
   }
 }
 
+// ---------- CRM Activity Layer (sprint Step 2) ----------
+
+function mapActivity(r: Row): Activity {
+  return {
+    id: r.id as ActivityId,
+    accountId: r.account_id,
+    contactId: (r.contact_id as ContactId) ?? null,
+    opportunityId: r.opportunity_id ?? null,
+    momentEventId: r.moment_event_id ?? null,
+    activityType: r.activity_type as ActivityType,
+    title: r.title ?? null,
+    body: r.body ?? null,
+    outcome: r.outcome ?? null,
+    nextAction: r.next_action ?? null,
+    nextActionAt: r.next_action_at ?? null,
+    occurredAt: r.occurred_at,
+    createdBy: r.created_by as UserId,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    metadata: r.metadata_json ? JSON.parse(r.metadata_json) : null,
+    deletedAt: r.deleted_at ?? null,
+  };
+}
+
+function mapCrmTask(r: Row): CrmTask {
+  return {
+    id: r.id as TaskId,
+    accountId: r.account_id ?? null,
+    contactId: (r.contact_id as ContactId) ?? null,
+    momentEventId: r.moment_event_id ?? null,
+    opportunityId: r.opportunity_id ?? null,
+    title: r.title,
+    description: r.description ?? null,
+    dueDate: r.due_date ?? null,
+    assigneeId: (r.assignee_id as UserId) ?? null,
+    createdBy: (r.created_by as UserId) ?? null,
+    priority: r.priority as TaskPriority,
+    status: r.status as TaskStatus,
+    completedAt: r.completed_at ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function mapCrmContact(r: Row): CrmContact {
+  return {
+    id: r.id as ContactId,
+    accountId: r.account_id,
+    name: r.name,
+    jobTitle: r.job_title ?? null,
+    department: r.department ?? null,
+    email: r.email ?? null,
+    phone: r.phone ?? null,
+    lineId: r.line_id ?? null,
+    buyingRole: (r.buying_role as ContactRole) ?? null,
+    influenceLevel: (r.influence_level as InfluenceLevel) ?? null,
+    isPrimary: r.is_primary === 1,
+    status: r.status as ContactStatus,
+    notes: r.notes ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function mapSuggestion(r: Row): ActivitySuggestion {
+  return {
+    id: r.id as SuggestionId,
+    activityId: r.activity_id as ActivityId,
+    payload: JSON.parse(r.payload_json),
+    confidence: r.confidence ?? null,
+    status: r.status as SuggestionStatus,
+    createdAt: r.created_at,
+    decidedAt: r.decided_at ?? null,
+    decidedBy: (r.decided_by as UserId) ?? null,
+  };
+}
+
+/** Keyset cursor "occurredAt|id" — occurred_at ISO first, id after the first pipe. */
+function decodeActivityCursor(cursor: string): { occurredAt: string; id: string } | null {
+  const at = cursor.indexOf("|");
+  if (at <= 0) return null;
+  return { occurredAt: cursor.slice(0, at), id: cursor.slice(at + 1) };
+}
+
+function activityInsertStatement(
+  db: D1Database,
+  id: string,
+  input: CreateActivityInput,
+  now: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO activities (
+         id, organization_id, account_id, contact_id, opportunity_id, moment_event_id,
+         activity_type, title, body, outcome, next_action, next_action_at,
+         occurred_at, created_by, created_at, updated_at, metadata_json, client_request_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id, ORG, input.accountId, input.contactId ?? null, input.opportunityId ?? null,
+      input.momentEventId ?? null, input.activityType, input.title ?? null,
+      input.body ?? null, input.outcome ?? null, input.nextAction ?? null,
+      input.nextActionAt ?? null, input.occurredAt, input.createdBy, now, now,
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      input.clientRequestId ?? null,
+    );
+}
+
+function taskInsertStatement(
+  db: D1Database,
+  id: string,
+  input: CreateCrmTaskInput,
+  now: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO tasks (
+         id, organization_id, account_id, contact_id, moment_event_id, opportunity_id,
+         title, description, due_date, assignee_id, created_by, priority, status,
+         client_request_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)`,
+    )
+    .bind(
+      id, ORG, input.accountId ?? null, input.contactId ?? null,
+      input.momentEventId ?? null, input.opportunityId ?? null, input.title,
+      input.description ?? null, input.dueDate ?? null, input.assigneeId ?? null,
+      input.createdBy ?? null, input.priority ?? "NORMAL",
+      input.clientRequestId ?? null, now, now,
+    );
+}
+
+class D1ActivityRepository implements ActivityRepository {
+  constructor(private db: D1Database) {}
+
+  async getById(id: ActivityId): Promise<Activity | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT * FROM activities WHERE organization_id = ? AND id = ? AND deleted_at IS NULL",
+      )
+      .bind(ORG, id)
+      .first<Row>();
+    return row ? mapActivity(row) : null;
+  }
+
+  async listByAccount(
+    accountId: AccountId,
+    options: ActivityListOptions = {},
+  ): Promise<Paginated<Activity>> {
+    const limit = options.limit ?? 20;
+    const conditions = [
+      "organization_id = ?",
+      "account_id = ?",
+      "deleted_at IS NULL",
+    ];
+    const binds: unknown[] = [ORG, accountId];
+    if (options.types && options.types.length > 0) {
+      conditions.push(`activity_type IN (${inClause(options.types.length)})`);
+      binds.push(...options.types);
+    }
+    if (options.cursor) {
+      const c = decodeActivityCursor(options.cursor);
+      if (c) {
+        conditions.push("(occurred_at < ? OR (occurred_at = ? AND id < ?))");
+        binds.push(c.occurredAt, c.occurredAt, c.id);
+      }
+    }
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM activities WHERE ${conditions.join(" AND ")}
+         ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+      )
+      .bind(...binds, limit + 1)
+      .all<Row>();
+    const page = res.results.slice(0, limit);
+    const last = page[page.length - 1];
+    return {
+      items: page.map(mapActivity),
+      nextCursor:
+        res.results.length > limit && last
+          ? `${last.occurred_at}|${last.id}`
+          : undefined,
+    };
+  }
+
+  async listRecentByAccounts(
+    accountIds: AccountId[],
+    limitPerAccount = 5,
+  ): Promise<Map<AccountId, Activity[]>> {
+    const out = new Map<AccountId, Activity[]>();
+    if (accountIds.length === 0) return out;
+    for (const chunk of chunked(accountIds)) {
+      const res = await this.db
+        .prepare(
+          `SELECT * FROM (
+             SELECT *, ROW_NUMBER() OVER (
+               PARTITION BY account_id ORDER BY occurred_at DESC, id DESC
+             ) AS rn
+             FROM activities
+             WHERE organization_id = ? AND account_id IN (${inClause(chunk.length)})
+               AND deleted_at IS NULL
+           ) WHERE rn <= ?`,
+        )
+        .bind(ORG, ...chunk, limitPerAccount)
+        .all<Row>();
+      for (const r of res.results) {
+        const key = r.account_id as AccountId;
+        const list = out.get(key) ?? [];
+        list.push(mapActivity(r));
+        out.set(key, list);
+      }
+    }
+    return out;
+  }
+
+  async create(
+    input: CreateActivityInput,
+  ): Promise<{ activity: Activity; created: boolean }> {
+    const id = `ACT-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    await activityInsertStatement(this.db, id, input, now).run();
+    const survivorId = input.clientRequestId
+      ? (
+          await this.db
+            .prepare(
+              "SELECT id FROM activities WHERE organization_id = ? AND client_request_id = ?",
+            )
+            .bind(ORG, input.clientRequestId)
+            .first<{ id: string }>()
+        )?.id ?? id
+      : id;
+    const activity = await this.getById(survivorId as ActivityId);
+    if (!activity) throw new Error("Activity insert failed: no survivor row");
+    return { activity, created: survivorId === id };
+  }
+
+  async update(id: ActivityId, patch: UpdateActivityPatch): Promise<Activity | null> {
+    const sets: string[] = [];
+    const binds: unknown[] = [];
+    if (patch.body !== undefined) { sets.push("body = ?"); binds.push(patch.body); }
+    if (patch.outcome !== undefined) { sets.push("outcome = ?"); binds.push(patch.outcome); }
+    if (patch.nextAction !== undefined) { sets.push("next_action = ?"); binds.push(patch.nextAction); }
+    if (patch.nextActionAt !== undefined) { sets.push("next_action_at = ?"); binds.push(patch.nextActionAt); }
+    if (sets.length > 0) {
+      sets.push("updated_at = ?");
+      binds.push(new Date().toISOString());
+      await this.db
+        .prepare(
+          `UPDATE activities SET ${sets.join(", ")}
+           WHERE organization_id = ? AND id = ? AND deleted_at IS NULL`,
+        )
+        .bind(...binds, ORG, id)
+        .run();
+    }
+    return this.getById(id);
+  }
+
+  async softDelete(id: ActivityId, userId: UserId): Promise<boolean> {
+    const now = new Date().toISOString();
+    const res = await this.db
+      .prepare(
+        `UPDATE activities SET deleted_at = ?, deleted_by = ?, updated_at = ?
+         WHERE organization_id = ? AND id = ? AND deleted_at IS NULL`,
+      )
+      .bind(now, userId, now, ORG, id)
+      .run();
+    return (res.meta.changes ?? 0) > 0;
+  }
+
+  async lastActivityByOpportunities(ids: OpportunityId[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (ids.length === 0) return out;
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(
+          `SELECT opportunity_id, MAX(occurred_at) AS last_at
+           FROM activities
+           WHERE organization_id = ? AND opportunity_id IN (${inClause(chunk.length)})
+             AND deleted_at IS NULL
+           GROUP BY opportunity_id`,
+        )
+        .bind(ORG, ...chunk)
+        .all<{ opportunity_id: string; last_at: string }>();
+      for (const r of res.results) out.set(r.opportunity_id, r.last_at);
+    }
+    return out;
+  }
+}
+
+class D1TaskRepository implements TaskRepository {
+  constructor(private db: D1Database) {}
+
+  async getById(id: TaskId): Promise<CrmTask | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM tasks WHERE organization_id = ? AND id = ?")
+      .bind(ORG, id)
+      .first<Row>();
+    return row ? mapCrmTask(row) : null;
+  }
+
+  async create(input: CreateCrmTaskInput): Promise<{ task: CrmTask; created: boolean }> {
+    const id = `TSK-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    await taskInsertStatement(this.db, id, input, now).run();
+    const survivorId = input.clientRequestId
+      ? (
+          await this.db
+            .prepare(
+              "SELECT id FROM tasks WHERE organization_id = ? AND client_request_id = ?",
+            )
+            .bind(ORG, input.clientRequestId)
+            .first<{ id: string }>()
+        )?.id ?? id
+      : id;
+    const task = await this.getById(survivorId as TaskId);
+    if (!task) throw new Error("Task insert failed: no survivor row");
+    return { task, created: survivorId === id };
+  }
+
+  async complete(id: TaskId): Promise<boolean> {
+    const now = new Date().toISOString();
+    const res = await this.db
+      .prepare(
+        `UPDATE tasks SET status = 'DONE', completed_at = ?, updated_at = ?
+         WHERE organization_id = ? AND id = ? AND status IN ('OPEN','IN_PROGRESS')`,
+      )
+      .bind(now, now, ORG, id)
+      .run();
+    return (res.meta.changes ?? 0) > 0;
+  }
+
+  async listByAssignee(
+    assigneeId: UserId,
+    band: TaskDueBand,
+    today: string,
+    limit: number,
+  ): Promise<CrmTask[]> {
+    const bandCondition =
+      band === "overdue"
+        ? "due_date < ?"
+        : band === "today"
+          ? "due_date = ?"
+          : "due_date > ?";
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE organization_id = ? AND assignee_id = ?
+           AND status IN ('OPEN','IN_PROGRESS')
+           AND due_date IS NOT NULL AND ${bandCondition}
+         ORDER BY due_date, id LIMIT ?`,
+      )
+      .bind(ORG, assigneeId, today, limit)
+      .all<Row>();
+    return res.results.map(mapCrmTask);
+  }
+
+  async listByAccount(accountId: AccountId, limit: number): Promise<CrmTask[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE organization_id = ? AND account_id = ?
+         ORDER BY (due_date IS NULL), due_date, id LIMIT ?`,
+      )
+      .bind(ORG, accountId, limit)
+      .all<Row>();
+    return res.results.map(mapCrmTask);
+  }
+
+  async listByOpportunity(opportunityId: OpportunityId, limit: number): Promise<CrmTask[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE organization_id = ? AND opportunity_id = ?
+         ORDER BY (due_date IS NULL), due_date, id LIMIT ?`,
+      )
+      .bind(ORG, opportunityId, limit)
+      .all<Row>();
+    return res.results.map(mapCrmTask);
+  }
+}
+
+class D1ContactRepository implements ContactRepository {
+  constructor(private db: D1Database) {}
+
+  async getById(id: ContactId): Promise<CrmContact | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM contacts WHERE organization_id = ? AND id = ?")
+      .bind(ORG, id)
+      .first<Row>();
+    return row ? mapCrmContact(row) : null;
+  }
+
+  async getByIds(ids: ContactId[]): Promise<CrmContact[]> {
+    if (ids.length === 0) return [];
+    const out: CrmContact[] = [];
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(
+          `SELECT * FROM contacts WHERE organization_id = ? AND id IN (${inClause(chunk.length)})`,
+        )
+        .bind(ORG, ...chunk)
+        .all<Row>();
+      out.push(...res.results.map(mapCrmContact));
+    }
+    return out;
+  }
+
+  async listByAccount(accountId: AccountId): Promise<CrmContact[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM contacts WHERE organization_id = ? AND account_id = ?
+         ORDER BY is_primary DESC, name`,
+      )
+      .bind(ORG, accountId)
+      .all<Row>();
+    return res.results.map(mapCrmContact);
+  }
+
+  async create(input: CreateCrmContactInput): Promise<CrmContact> {
+    const id = `CT-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO contacts (
+           id, organization_id, account_id, name, job_title, department, email,
+           phone, line_id, buying_role, influence_level, is_primary, status,
+           notes, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id, ORG, input.accountId, input.name, input.jobTitle ?? null,
+        input.department ?? null, input.email ?? null, input.phone ?? null,
+        input.lineId ?? null, input.buyingRole ?? null,
+        input.influenceLevel ?? null, input.isPrimary ? 1 : 0,
+        input.status ?? "ACTIVE", input.notes ?? null, now, now,
+      )
+      .run();
+    const contact = await this.getById(id as ContactId);
+    if (!contact) throw new Error("Contact insert failed");
+    return contact;
+  }
+
+  async update(id: ContactId, patch: UpdateCrmContactPatch): Promise<CrmContact | null> {
+    const columns: Record<string, unknown> = {
+      name: patch.name,
+      job_title: patch.jobTitle,
+      department: patch.department,
+      email: patch.email,
+      phone: patch.phone,
+      line_id: patch.lineId,
+      buying_role: patch.buyingRole,
+      influence_level: patch.influenceLevel,
+      is_primary: patch.isPrimary === undefined ? undefined : patch.isPrimary ? 1 : 0,
+      status: patch.status,
+      notes: patch.notes,
+    };
+    const sets: string[] = [];
+    const binds: unknown[] = [];
+    for (const [col, value] of Object.entries(columns)) {
+      if (value !== undefined) {
+        sets.push(`${col} = ?`);
+        binds.push(value);
+      }
+    }
+    if (sets.length > 0) {
+      sets.push("updated_at = ?");
+      binds.push(new Date().toISOString());
+      await this.db
+        .prepare(
+          `UPDATE contacts SET ${sets.join(", ")} WHERE organization_id = ? AND id = ?`,
+        )
+        .bind(...binds, ORG, id)
+        .run();
+    }
+    return this.getById(id);
+  }
+}
+
+class D1SuggestionRepository implements SuggestionRepository {
+  constructor(private db: D1Database) {}
+
+  async getById(id: SuggestionId): Promise<ActivitySuggestion | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT * FROM activity_ai_suggestions WHERE organization_id = ? AND id = ?",
+      )
+      .bind(ORG, id)
+      .first<Row>();
+    return row ? mapSuggestion(row) : null;
+  }
+
+  async create(input: CreateSuggestionInput): Promise<ActivitySuggestion> {
+    const id = `SUG-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO activity_ai_suggestions (
+           id, organization_id, activity_id, payload_json, confidence, status, created_at
+         ) VALUES (?, ?, ?, ?, ?, 'PENDING', ?)`,
+      )
+      .bind(id, ORG, input.activityId, JSON.stringify(input.payload),
+            input.confidence ?? null, now)
+      .run();
+    const suggestion = await this.getById(id as SuggestionId);
+    if (!suggestion) throw new Error("Suggestion insert failed");
+    return suggestion;
+  }
+
+  async listPendingByAccount(
+    accountId: AccountId,
+    limit: number,
+  ): Promise<ActivitySuggestion[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT s.* FROM activity_ai_suggestions s
+         JOIN activities a ON a.id = s.activity_id AND a.organization_id = s.organization_id
+         WHERE s.organization_id = ? AND a.account_id = ? AND s.status = 'PENDING'
+         ORDER BY s.created_at DESC LIMIT ?`,
+      )
+      .bind(ORG, accountId, limit)
+      .all<Row>();
+    return res.results.map(mapSuggestion);
+  }
+}
+
+class D1InteractionWriteRepository implements InteractionWriteRepository {
+  constructor(
+    private db: D1Database,
+    private activities: D1ActivityRepository,
+    private tasks: D1TaskRepository,
+  ) {}
+
+  async logInteraction(
+    input: LogInteractionInput,
+  ): Promise<{ activity: Activity; task?: CrmTask; deduped: boolean }> {
+    const requestId = input.activity.clientRequestId;
+    if (!requestId) {
+      throw new Error("logInteraction requires activity.clientRequestId");
+    }
+    const now = new Date().toISOString();
+    const activityId = `ACT-${crypto.randomUUID()}`;
+    const taskKey = followUpTaskKey(requestId);
+
+    const statements: D1PreparedStatement[] = [
+      activityInsertStatement(this.db, activityId, input.activity, now),
+    ];
+    if (input.followUpTask) {
+      statements.push(
+        taskInsertStatement(
+          this.db,
+          `TSK-${crypto.randomUUID()}`,
+          { ...input.followUpTask, clientRequestId: taskKey },
+          now,
+        ),
+      );
+    }
+    if (input.audit) {
+      // Deterministic id — a retried batch collides on the PK and is ignored.
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO audit_logs (
+               id, organization_id, user_id, entity_type, entity_id, action,
+               after_json, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(
+            `AUD-ACT-${requestId}`, ORG, input.audit.userId,
+            input.audit.entityType, input.audit.entityId, input.audit.action,
+            input.audit.afterJson ? JSON.stringify(input.audit.afterJson) : null,
+            now,
+          ),
+      );
+    }
+    await this.db.batch(statements);
+
+    const survivor = await this.db
+      .prepare(
+        "SELECT id FROM activities WHERE organization_id = ? AND client_request_id = ?",
+      )
+      .bind(ORG, requestId)
+      .first<{ id: string }>();
+    if (!survivor) throw new Error("logInteraction: no survivor activity");
+    const activity = await this.activities.getById(survivor.id as ActivityId);
+    if (!activity) throw new Error("logInteraction: survivor activity unreadable");
+
+    let task: CrmTask | undefined;
+    if (input.followUpTask) {
+      const taskRow = await this.db
+        .prepare(
+          "SELECT id FROM tasks WHERE organization_id = ? AND client_request_id = ?",
+        )
+        .bind(ORG, taskKey)
+        .first<{ id: string }>();
+      task = taskRow ? (await this.tasks.getById(taskRow.id as TaskId)) ?? undefined : undefined;
+    }
+    return { activity, task, deduped: survivor.id !== activityId };
+  }
+}
+
 export async function createD1Repositories(): Promise<Repositories> {
   const env = await getBindings();
   if (!env.DB) {
@@ -987,6 +1614,8 @@ export async function createD1Repositories(): Promise<Repositories> {
     );
   }
   const db = env.DB;
+  const activities = new D1ActivityRepository(db);
+  const tasks = new D1TaskRepository(db);
   return {
     accounts: new D1AccountRepository(db),
     moments: new D1MomentRepository(db),
@@ -996,5 +1625,10 @@ export async function createD1Repositories(): Promise<Repositories> {
     users: new D1UserRepository(db),
     appointments: new D1AppointmentRepository(db),
     signals: new D1SignalRepository(db),
+    activities,
+    tasks,
+    contacts: new D1ContactRepository(db),
+    suggestions: new D1SuggestionRepository(db),
+    interactions: new D1InteractionWriteRepository(db, activities, tasks),
   };
 }

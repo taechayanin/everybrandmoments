@@ -128,6 +128,39 @@ export interface CrmTask {
   updatedAt: string;
 }
 
+/** First-class CRM contact (spec §15–§16) — the persisted shape behind
+ * ContactRepository; the legacy embedded Account.contacts snapshot stays for
+ * existing UI until Step 4 rewires it. */
+export interface CrmContact {
+  id: ContactId;
+  accountId: string;
+  name: string;
+  jobTitle: string | null;
+  department: string | null;
+  email: string | null;
+  phone: string | null;
+  lineId: string | null;
+  buyingRole: ContactRole | null;
+  influenceLevel: InfluenceLevel | null;
+  isPrimary: boolean;
+  status: ContactStatus;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** AI analysis persisted for human decision (spec §22). */
+export interface ActivitySuggestion {
+  id: SuggestionId;
+  activityId: ActivityId;
+  payload: ActivityAnalysis;
+  confidence: number | null;
+  status: SuggestionStatus;
+  createdAt: string;
+  decidedAt: string | null;
+  decidedBy: UserId | null;
+}
+
 /** Structured output of AI activity analysis (spec §20) — suggestions only,
  * never a direct mutation; a human accepts/ignores (spec §22). */
 export interface ActivityAnalysis {
