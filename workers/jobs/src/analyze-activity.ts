@@ -1,5 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { MOMENT_CODES } from "../../../lib/domain/moment";
+import {
+  decideAnalysisTransition,
+  MAX_ANALYSIS_ATTEMPTS,
+  type AnalysisOutcomeKind,
+} from "../../../lib/domain/analysis-lifecycle";
 import { ActivityAnalysisSchema } from "../../../lib/contracts/crm";
 import type { AnalyzeActivityJob } from "../../../lib/jobs/contracts";
 
@@ -167,17 +172,40 @@ export async function analyzeWithClaude(
 
 const ANALYZABLE_TYPES = ["NOTE", "CALL", "MEETING", "EMAIL", "LINE", "VISIT"];
 
-/** Terminal outbox transition — analysis finished (suggestion stored or a
- * safe skip). Retry-class errors never reach this, so the reconciler can
- * still recover them. */
-async function markProcessed(db: D1Database, job: AnalyzeActivityJob): Promise<void> {
+/** Persist one lifecycle transition (state machine in
+ * lib/domain/analysis-lifecycle.ts — shared with the tests). */
+async function applyTransition(
+  db: D1Database,
+  job: AnalyzeActivityJob,
+  kind: AnalysisOutcomeKind,
+  reason: string,
+  attempt: number,
+): Promise<{ rethrow: boolean }> {
+  const transition = decideAnalysisTransition(kind, reason, attempt, new Date());
   await db
     .prepare(
-      `UPDATE activities SET analysis_status = 'PROCESSED', updated_at = ?
+      `UPDATE activities
+       SET analysis_status = ?, analysis_last_error = ?, analysis_next_retry_at = ?,
+           updated_at = ?
        WHERE organization_id = ? AND account_id = ? AND id = ?`,
     )
-    .bind(new Date().toISOString(), job.organizationId, job.accountId, job.activityId)
+    .bind(
+      transition.status, transition.lastError, transition.nextRetryAt,
+      new Date().toISOString(), job.organizationId, job.accountId, job.activityId,
+    )
     .run();
+  console.log(
+    JSON.stringify({
+      event: "ai_analysis_transition",
+      activityId: job.activityId,
+      organizationId: job.organizationId,
+      to: transition.status,
+      attempt,
+      errorCategory: kind,
+      reason,
+    }),
+  );
+  return { rethrow: transition.rethrow };
 }
 
 export async function analyzeActivityJob(
@@ -188,7 +216,8 @@ export async function analyzeActivityJob(
   const startedAt = Date.now();
   const activity = await db
     .prepare(
-      `SELECT id, activity_type, title, body, outcome, occurred_at
+      `SELECT id, activity_type, title, body, outcome, occurred_at,
+              analysis_status, analysis_attempt_count
        FROM activities
        WHERE organization_id = ? AND account_id = ? AND id = ?
          AND deleted_at IS NULL`,
@@ -201,16 +230,42 @@ export async function analyzeActivityJob(
       body: string | null;
       outcome: string | null;
       occurred_at: string;
+      analysis_status: string | null;
+      analysis_attempt_count: number;
     }>();
 
   if (!activity || !ANALYZABLE_TYPES.includes(activity.activity_type)) {
-    console.log(
-      JSON.stringify({ event: "ai_analysis_skipped", reason: "no_activity", activityId: job.activityId }),
-    );
-    // Deleted/ineligible rows are terminal too — do not reconcile forever.
-    await markProcessed(db, job);
+    // Deleted/unsupported input — approved terminal skip (never reconciled).
+    await applyTransition(db, job, "terminal_skip", "no_activity", 0);
     return;
   }
+  // Terminal states never re-run: a redelivered/stale message acks silently.
+  if (["PROCESSED", "FAILED", "BLOCKED"].includes(activity.analysis_status ?? "")) {
+    console.log(
+      JSON.stringify({
+        event: "ai_analysis_skipped",
+        reason: `terminal_status:${activity.analysis_status}`,
+        activityId: job.activityId,
+      }),
+    );
+    return;
+  }
+
+  // Consume one attempt from the budget BEFORE calling the model, so a crash
+  // mid-call still counts and the loop stays bounded.
+  const attempt = (activity.analysis_attempt_count ?? 0) + 1;
+  if (attempt > MAX_ANALYSIS_ATTEMPTS) {
+    await applyTransition(db, job, "transient_error", "budget_precheck", attempt);
+    return;
+  }
+  await db
+    .prepare(
+      `UPDATE activities
+       SET analysis_attempt_count = ?, analysis_last_attempt_at = ?
+       WHERE organization_id = ? AND account_id = ? AND id = ?`,
+    )
+    .bind(attempt, new Date().toISOString(), job.organizationId, job.accountId, job.activityId)
+    .run();
 
   const outcome = await analyzeWithClaude(env, {
     activityType: activity.activity_type,
@@ -221,29 +276,33 @@ export async function analyzeActivityJob(
   });
 
   if (outcome.type === "retry") {
-    // Loud failure: logged with category, then thrown so the queue retries
-    // and exhausted messages land in the DLQ — never a silent success.
-    console.error(
-      JSON.stringify({
-        event: "ai_analysis_error",
-        activityId: job.activityId,
-        organizationId: job.organizationId,
-        errorCategory: outcome.category,
-        error: outcome.error.message,
-      }),
+    if (outcome.category === "config") {
+      // 401/403: BLOCKED — observable, no automatic retry storm; operator
+      // reset re-enters the lifecycle after configuration is fixed.
+      await applyTransition(db, job, "config_error", outcome.error.message, attempt);
+      return;
+    }
+    const { rethrow } = await applyTransition(
+      db, job, "transient_error", outcome.error.message, attempt,
     );
-    throw outcome.error;
+    if (rethrow) throw outcome.error; // queue retry / DLQ visibility
+    return; // budget exhausted -> FAILED (ack)
   }
   if (outcome.type === "skip") {
-    console.log(
-      JSON.stringify({
-        event: "ai_analysis_skipped",
-        reason: outcome.reason,
-        activityId: job.activityId,
-        organizationId: job.organizationId,
-      }),
-    );
-    await markProcessed(db, job);
+    if (outcome.reason === "no_api_key") {
+      // Missing configuration must NOT become PROCESSED — the activity would
+      // be lost forever once the key is configured (review round 2, fix 1).
+      await applyTransition(db, job, "config_error", "no_api_key", attempt);
+      return;
+    }
+    if (outcome.reason === "refusal") {
+      // Model deliberately declined — approved terminal skip, recorded.
+      await applyTransition(db, job, "terminal_skip", "refusal", attempt);
+      return;
+    }
+    // invalid/empty output: nondeterministic — retry later within budget,
+    // without DLQ noise.
+    await applyTransition(db, job, "soft_fail", outcome.reason, attempt);
     return;
   }
 
@@ -285,7 +344,7 @@ export async function analyzeActivityJob(
     )
     .run();
 
-  await markProcessed(db, job);
+  await applyTransition(db, job, "success", "", attempt);
 
   console.log(
     JSON.stringify({

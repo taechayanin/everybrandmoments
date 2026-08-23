@@ -269,11 +269,14 @@ export interface ActivityRepository {
   softDelete(id: ActivityId, userId: UserId): Promise<boolean>;
   /** opportunity_id -> latest occurred_at, one grouped query (spec §27). */
   lastActivityByOpportunities(ids: OpportunityId[]): Promise<Map<string, string>>;
-  /** Outbox transitions (Step-6 P0): PENDING -> QUEUED -> PROCESSED. */
+  /** Outbox transitions (Step-6 P0/P1 lifecycle). */
   markAnalysisStatus(
     ids: ActivityId[],
-    status: "QUEUED" | "PROCESSED",
+    status: "QUEUED" | "PROCESSED" | "FAILED" | "BLOCKED",
   ): Promise<void>;
+  /** Operator reset (BLOCKED/FAILED -> PENDING, attempts 0, error cleared) —
+   * the controlled retry after configuration is fixed. */
+  resetAnalysis(ids: ActivityId[]): Promise<void>;
 }
 
 // ---------- CRM Tasks ----------

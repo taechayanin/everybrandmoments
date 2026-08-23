@@ -1,4 +1,5 @@
 import { JobSchema, type Job } from "../../../lib/jobs/contracts";
+import { MAX_ANALYSIS_ATTEMPTS } from "../../../lib/domain/analysis-lifecycle";
 import { analyzeActivityJob } from "./analyze-activity";
 import { detectMomentFromSignals } from "./detection";
 import { scanAnniversaries, scanInactiveAccounts } from "./rules";
@@ -169,13 +170,33 @@ async function reconcilePendingSignals(env: JobsEnv): Promise<void> {
 }
 
 async function reconcilePendingAnalyses(env: JobsEnv): Promise<void> {
+  const now = new Date().toISOString();
   const cutoff = new Date(Date.now() - RECONCILE_AFTER_MS).toISOString();
+  // Bounded lifecycle (Step-6 review round 2): rows whose attempt budget is
+  // spent flip to FAILED (observable, operator-resettable) instead of
+  // spinning through the queue forever.
+  await env.DB.prepare(
+    `UPDATE activities
+     SET analysis_status = 'FAILED',
+         analysis_last_error = COALESCE(analysis_last_error, 'max_attempts_exceeded'),
+         updated_at = ?
+     WHERE analysis_status IN ('PENDING', 'QUEUED')
+       AND analysis_attempt_count >= ?`,
+  )
+    .bind(now, MAX_ANALYSIS_ATTEMPTS)
+    .run();
+  // Eligibility mirrors isAnalysisRetryEligible(): retryable status, budget
+  // remaining, stale, and past its scheduled backoff. BLOCKED/FAILED/
+  // PROCESSED are never selected.
   const stale = await env.DB.prepare(
     `SELECT id, organization_id, account_id FROM activities
-     WHERE analysis_status IN ('PENDING', 'QUEUED') AND updated_at < ?
+     WHERE analysis_status IN ('PENDING', 'QUEUED')
+       AND analysis_attempt_count < ?
+       AND updated_at < ?
+       AND (analysis_next_retry_at IS NULL OR analysis_next_retry_at <= ?)
      LIMIT 50`,
   )
-    .bind(cutoff)
+    .bind(MAX_ANALYSIS_ATTEMPTS, cutoff, now)
     .all<{ id: string; organization_id: string; account_id: string }>();
 
   let requeued = 0;

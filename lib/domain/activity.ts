@@ -47,7 +47,9 @@ export const ANALYZABLE_ACTIVITY_TYPES = [
 ] as const;
 
 /** Outbox lifecycle of the async AI analysis (Step-6 P0). */
-export const ANALYSIS_STATUSES = ["PENDING", "QUEUED", "PROCESSED"] as const;
+export const ANALYSIS_STATUSES = [
+  "PENDING", "QUEUED", "PROCESSED", "FAILED", "BLOCKED",
+] as const;
 export type AnalysisStatus = (typeof ANALYSIS_STATUSES)[number];
 
 export const CALL_OUTCOMES = [
@@ -145,6 +147,9 @@ export interface Activity {
   deletedAt: string | null;
   /** AI-analysis outbox state; null = not eligible / legacy row. */
   analysisStatus: AnalysisStatus | null;
+  analysisAttemptCount: number;
+  analysisLastError: string | null;
+  analysisNextRetryAt: string | null;
 }
 
 /** CRM follow-up task (spec §17) — canonical uppercase status everywhere. */

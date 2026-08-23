@@ -221,6 +221,96 @@ describe("prompt safety + error classification", () => {
   });
 });
 
+describe("analysis lifecycle state machine (review round 2)", () => {
+  const NOW = new Date("2026-08-23T00:00:00Z");
+
+  it("missing API key / 401 / 403 become BLOCKED — never PROCESSED", async () => {
+    const { decideAnalysisTransition } = await import("@/lib/domain/analysis-lifecycle");
+    const { analyzeWithClaude } = await import("../workers/jobs/src/analyze-activity");
+    // No key: the model call itself reports the config gap...
+    const outcome = await analyzeWithClaude({}, {
+      activityType: "NOTE", title: null, body: "x", outcome: null,
+      occurredAt: "2026-08-23T00:00:00Z",
+    });
+    expect(outcome).toEqual({ type: "skip", reason: "no_api_key" });
+    // ...and the lifecycle maps it to BLOCKED, not PROCESSED.
+    const t = decideAnalysisTransition("config_error", "no_api_key", 1, NOW);
+    expect(t.status).toBe("BLOCKED");
+    expect(t.lastError).toBe("no_api_key");
+    expect(t.rethrow).toBe(false);
+  });
+
+  it("transient failures consume attempts and stay retryable under the budget", async () => {
+    const { decideAnalysisTransition, MAX_ANALYSIS_ATTEMPTS, analysisRetryDelayMs } =
+      await import("@/lib/domain/analysis-lifecycle");
+    const t = decideAnalysisTransition("transient_error", "http 500", 2, NOW);
+    expect(t.status).toBe("QUEUED");
+    expect(t.rethrow).toBe(true);
+    expect(t.nextRetryAt).toBe(
+      new Date(NOW.getTime() + analysisRetryDelayMs(2)).toISOString(),
+    );
+    expect(MAX_ANALYSIS_ATTEMPTS).toBeGreaterThan(2);
+  });
+
+  it("attempt budget exhausted -> FAILED, no rethrow, no auto re-enqueue", async () => {
+    const { decideAnalysisTransition, isAnalysisRetryEligible, MAX_ANALYSIS_ATTEMPTS } =
+      await import("@/lib/domain/analysis-lifecycle");
+    const t = decideAnalysisTransition(
+      "transient_error", "http 500", MAX_ANALYSIS_ATTEMPTS, NOW,
+    );
+    expect(t.status).toBe("FAILED");
+    expect(t.lastError).toContain("max_attempts_exceeded");
+    expect(t.rethrow).toBe(false);
+    expect(
+      isAnalysisRetryEligible(
+        { status: "FAILED", attemptCount: MAX_ANALYSIS_ATTEMPTS, nextRetryAt: null, updatedAt: "2020-01-01" },
+        NOW.toISOString(), NOW.toISOString(),
+      ),
+    ).toBe(false);
+  });
+
+  it("reconciler eligibility: PROCESSED/BLOCKED never re-enqueue; backoff gates retries", async () => {
+    const { isAnalysisRetryEligible, MAX_ANALYSIS_ATTEMPTS } = await import(
+      "@/lib/domain/analysis-lifecycle"
+    );
+    const nowIso = NOW.toISOString();
+    const old = "2020-01-01T00:00:00Z";
+    expect(isAnalysisRetryEligible({ status: "PROCESSED", attemptCount: 1, nextRetryAt: null, updatedAt: old }, nowIso, nowIso)).toBe(false);
+    expect(isAnalysisRetryEligible({ status: "BLOCKED", attemptCount: 1, nextRetryAt: null, updatedAt: old }, nowIso, nowIso)).toBe(false);
+    // config-blocked cannot storm: even a stale BLOCKED row is ineligible.
+    expect(isAnalysisRetryEligible({ status: "QUEUED", attemptCount: 1, nextRetryAt: "2099-01-01T00:00:00Z", updatedAt: old }, nowIso, nowIso)).toBe(false);
+    expect(isAnalysisRetryEligible({ status: "QUEUED", attemptCount: 1, nextRetryAt: "2020-06-01T00:00:00Z", updatedAt: old }, nowIso, nowIso)).toBe(true);
+    expect(isAnalysisRetryEligible({ status: "PENDING", attemptCount: MAX_ANALYSIS_ATTEMPTS, nextRetryAt: null, updatedAt: old }, nowIso, nowIso)).toBe(false);
+  });
+
+  it("soft output failures retry without rethrow; refusal is an approved terminal skip", async () => {
+    const { decideAnalysisTransition } = await import("@/lib/domain/analysis-lifecycle");
+    const soft = decideAnalysisTransition("soft_fail", "invalid_output", 1, NOW);
+    expect(soft.status).toBe("QUEUED");
+    expect(soft.rethrow).toBe(false);
+    const refusal = decideAnalysisTransition("terminal_skip", "refusal", 1, NOW);
+    expect(refusal.status).toBe("PROCESSED");
+    expect(refusal.lastError).toBe("refusal");
+  });
+
+  it("operator reset re-enters the lifecycle after config is fixed", async () => {
+    const { retryAnalysis } = await import("@/lib/application/ai/retry-analysis");
+    const { activity } = await repos.activities.create({
+      accountId: ACC, activityType: "NOTE", body: "blocked one",
+      occurredAt: "2026-08-23T02:00:00Z", createdBy: OWNER, clientRequestId: rid(),
+    });
+    await repos.activities.markAnalysisStatus([activity.id as never], "BLOCKED");
+    await retryAnalysis(activity.id as never);
+    const stored = await repos.activities.getById(activity.id as never);
+    expect(stored?.analysisStatus).toBe("PENDING");
+    expect(stored?.analysisAttemptCount).toBe(0);
+    expect(stored?.analysisLastError).toBeNull();
+    // PROCESSED rows are guarded from this path.
+    await repos.activities.markAnalysisStatus([activity.id as never], "PROCESSED");
+    await expect(retryAnalysis(activity.id as never)).rejects.toThrow(CrmError);
+  });
+});
+
 describe("acceptance path — atomic + idempotent", () => {
   async function makeSuggestion(payload: ActivityAnalysis) {
     const { activity } = await repos.activities.create({

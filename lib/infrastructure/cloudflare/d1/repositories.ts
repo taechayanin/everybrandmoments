@@ -1087,6 +1087,9 @@ function mapActivity(r: Row): Activity {
     metadata: r.metadata_json ? JSON.parse(r.metadata_json) : null,
     deletedAt: r.deleted_at ?? null,
     analysisStatus: r.analysis_status ?? null,
+    analysisAttemptCount: r.analysis_attempt_count ?? 0,
+    analysisLastError: r.analysis_last_error ?? null,
+    analysisNextRetryAt: r.analysis_next_retry_at ?? null,
   };
 }
 
@@ -1420,7 +1423,7 @@ class D1ActivityRepository implements ActivityRepository {
 
   async markAnalysisStatus(
     ids: ActivityId[],
-    status: "QUEUED" | "PROCESSED",
+    status: "QUEUED" | "PROCESSED" | "FAILED" | "BLOCKED",
   ): Promise<void> {
     if (ids.length === 0) return;
     const now = new Date().toISOString();
@@ -1431,6 +1434,24 @@ class D1ActivityRepository implements ActivityRepository {
            WHERE organization_id = ? AND id IN (${inClause(chunk.length)})`,
         )
         .bind(status, now, ORG, ...chunk)
+        .run();
+    }
+  }
+
+  async resetAnalysis(ids: ActivityId[]): Promise<void> {
+    if (ids.length === 0) return;
+    const now = new Date().toISOString();
+    for (const chunk of chunked(ids)) {
+      await this.db
+        .prepare(
+          `UPDATE activities
+           SET analysis_status = 'PENDING', analysis_attempt_count = 0,
+               analysis_last_error = NULL, analysis_next_retry_at = NULL,
+               updated_at = ?
+           WHERE organization_id = ? AND id IN (${inClause(chunk.length)})
+             AND analysis_status IN ('FAILED','BLOCKED')`,
+        )
+        .bind(now, ORG, ...chunk)
         .run();
     }
   }

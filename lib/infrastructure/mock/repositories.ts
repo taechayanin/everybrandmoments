@@ -442,6 +442,9 @@ function buildActivity(id: ActivityId, input: CreateActivityInput, now: string):
     )
       ? "PENDING"
       : null,
+    analysisAttemptCount: 0,
+    analysisLastError: null,
+    analysisNextRetryAt: null,
   };
 }
 
@@ -604,13 +607,30 @@ class MockActivityRepository implements ActivityRepository {
 
   async markAnalysisStatus(
     ids: ActivityId[],
-    status: "QUEUED" | "PROCESSED",
+    status: "QUEUED" | "PROCESSED" | "FAILED" | "BLOCKED",
   ): Promise<void> {
     const wanted = new Set<string>(ids);
     const now = new Date().toISOString();
     for (const a of crmActivities) {
       if (wanted.has(a.id)) {
         a.analysisStatus = status;
+        a.updatedAt = now;
+      }
+    }
+  }
+
+  async resetAnalysis(ids: ActivityId[]): Promise<void> {
+    const wanted = new Set<string>(ids);
+    const now = new Date().toISOString();
+    for (const a of crmActivities) {
+      if (
+        wanted.has(a.id) &&
+        (a.analysisStatus === "FAILED" || a.analysisStatus === "BLOCKED")
+      ) {
+        a.analysisStatus = "PENDING";
+        a.analysisAttemptCount = 0;
+        a.analysisLastError = null;
+        a.analysisNextRetryAt = null;
         a.updatedAt = now;
       }
     }
