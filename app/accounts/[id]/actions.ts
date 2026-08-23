@@ -149,6 +149,7 @@ export async function updateActivityAction(input: unknown): Promise<CrmActionRes
     const activity = await updateActivity({
       ...data,
       activityId: data.activityId as ActivityId,
+      actor: DEMO_USER,
     });
     revalidatePath(`/accounts/${activity.accountId}`);
     return { ok: true };

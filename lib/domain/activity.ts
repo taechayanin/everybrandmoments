@@ -70,6 +70,10 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_PRIORITIES = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 
+/** Business default — applied at the application boundary, never inside a
+ * repository adapter (Step-3 review item 1). */
+export const DEFAULT_TASK_PRIORITY: TaskPriority = "NORMAL";
+
 export const SUGGESTION_STATUSES = ["PENDING", "ACCEPTED", "IGNORED"] as const;
 export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
 

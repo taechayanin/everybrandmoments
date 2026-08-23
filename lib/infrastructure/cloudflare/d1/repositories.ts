@@ -1135,7 +1135,8 @@ function taskInsertStatement(
       id, ORG, input.accountId ?? null, input.contactId ?? null,
       input.momentEventId ?? null, input.opportunityId ?? null, input.title,
       input.description ?? null, input.dueDate ?? null, input.assigneeId ?? null,
-      input.createdBy ?? null, input.priority ?? "NORMAL",
+      // Canonical priority comes from the application layer — persisted verbatim.
+      input.createdBy ?? null, input.priority,
       input.clientRequestId ?? null, now, now,
     );
 }
@@ -1244,37 +1245,92 @@ class D1ActivityRepository implements ActivityRepository {
     return { activity, created: survivorId === id };
   }
 
-  async update(id: ActivityId, patch: UpdateActivityPatch): Promise<Activity | null> {
+  async update(
+    id: ActivityId,
+    patch: UpdateActivityPatch,
+    actor: UserId,
+  ): Promise<Activity | null> {
+    const existing = await this.getById(id);
+    if (!existing) return null;
     const sets: string[] = [];
     const binds: unknown[] = [];
-    if (patch.body !== undefined) { sets.push("body = ?"); binds.push(patch.body); }
-    if (patch.outcome !== undefined) { sets.push("outcome = ?"); binds.push(patch.outcome); }
-    if (patch.nextAction !== undefined) { sets.push("next_action = ?"); binds.push(patch.nextAction); }
-    if (patch.nextActionAt !== undefined) { sets.push("next_action_at = ?"); binds.push(patch.nextActionAt); }
-    if (sets.length > 0) {
-      sets.push("updated_at = ?");
-      binds.push(new Date().toISOString());
-      await this.db
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    const fields: [keyof UpdateActivityPatch, string, unknown][] = [
+      ["body", "body", existing.body],
+      ["outcome", "outcome", existing.outcome],
+      ["nextAction", "next_action", existing.nextAction],
+      ["nextActionAt", "next_action_at", existing.nextActionAt],
+    ];
+    for (const [key, column, prior] of fields) {
+      if (patch[key] !== undefined) {
+        sets.push(`${column} = ?`);
+        binds.push(patch[key]);
+        before[key] = prior;
+        after[key] = patch[key];
+      }
+    }
+    if (sets.length === 0) return existing;
+    const now = new Date().toISOString();
+    sets.push("updated_at = ?");
+    binds.push(now);
+    // Mutation + audit in ONE batch (Step-3 review item 4). The audit INSERT
+    // is conditional on the same predicate as the UPDATE, so a row that was
+    // deleted between read and write produces neither.
+    await this.db.batch([
+      this.db
         .prepare(
           `UPDATE activities SET ${sets.join(", ")}
            WHERE organization_id = ? AND id = ? AND deleted_at IS NULL`,
         )
-        .bind(...binds, ORG, id)
-        .run();
-    }
+        .bind(...binds, ORG, id),
+      this.db
+        .prepare(
+          `INSERT INTO audit_logs (
+             id, organization_id, user_id, entity_type, entity_id, action,
+             before_json, after_json, created_at
+           )
+           SELECT ?, ?, ?, 'activity', ?, 'ACTIVITY_UPDATED', ?, ?, ?
+           WHERE EXISTS (
+             SELECT 1 FROM activities
+             WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
+           )`,
+        )
+        .bind(
+          `AUD-${crypto.randomUUID()}`, ORG, actor, id,
+          JSON.stringify(before), JSON.stringify(after), now, ORG, id,
+        ),
+    ]);
     return this.getById(id);
   }
 
   async softDelete(id: ActivityId, userId: UserId): Promise<boolean> {
     const now = new Date().toISOString();
-    const res = await this.db
-      .prepare(
-        `UPDATE activities SET deleted_at = ?, deleted_by = ?, updated_at = ?
-         WHERE organization_id = ? AND id = ? AND deleted_at IS NULL`,
-      )
-      .bind(now, userId, now, ORG, id)
-      .run();
-    return (res.meta.changes ?? 0) > 0;
+    // Delete + audit in ONE batch. The audit guard matches deleted_at against
+    // OUR timestamp, so only the batch that actually performed the delete
+    // writes the audit row — a retry updates nothing and audits nothing.
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE activities SET deleted_at = ?, deleted_by = ?, updated_at = ?
+           WHERE organization_id = ? AND id = ? AND deleted_at IS NULL`,
+        )
+        .bind(now, userId, now, ORG, id),
+      this.db
+        .prepare(
+          `INSERT INTO audit_logs (
+             id, organization_id, user_id, entity_type, entity_id, action,
+             created_at
+           )
+           SELECT ?, ?, ?, 'activity', ?, 'ACTIVITY_DELETED', ?
+           WHERE EXISTS (
+             SELECT 1 FROM activities
+             WHERE organization_id = ? AND id = ? AND deleted_at = ?
+           )`,
+        )
+        .bind(`AUD-${crypto.randomUUID()}`, ORG, userId, id, now, ORG, id, now),
+    ]);
+    return ((results[0]?.meta as { changes?: number })?.changes ?? 0) > 0;
   }
 
   async lastActivityByOpportunities(ids: OpportunityId[]): Promise<Map<string, string>> {

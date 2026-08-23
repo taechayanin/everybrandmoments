@@ -4,13 +4,16 @@ import { CrmError } from "./shared";
 
 export interface UpdateActivityCommand {
   activityId: ActivityId;
+  /** Actor recorded on the ACTIVITY_UPDATED audit row. */
+  actor: UserId;
   body?: string;
   outcome?: string;
   nextAction?: string;
   nextActionAt?: string;
 }
 
-/** User-created notes are editable; system rows are not (spec §31). */
+/** User-created notes are editable; system rows are not (spec §31).
+ * The repository writes the mutation + audit as one atomic unit. */
 export async function updateActivity(
   command: UpdateActivityCommand,
 ): Promise<Activity> {
@@ -21,12 +24,16 @@ export async function updateActivity(
   if (!editable.includes(existing.activityType)) {
     throw new CrmError("Activity จากระบบแก้ไขไม่ได้");
   }
-  const updated = await repos.activities.update(command.activityId, {
-    body: command.body,
-    outcome: command.outcome,
-    nextAction: command.nextAction,
-    nextActionAt: command.nextActionAt,
-  });
+  const updated = await repos.activities.update(
+    command.activityId,
+    {
+      body: command.body,
+      outcome: command.outcome,
+      nextAction: command.nextAction,
+      nextActionAt: command.nextActionAt,
+    },
+    command.actor,
+  );
   if (!updated) throw new CrmError("แก้ไข Activity ไม่สำเร็จ");
   return updated;
 }

@@ -104,6 +104,7 @@ describe("InteractionWriteRepository", () => {
         title: "ส่ง sample ศุกร์นี้",
         dueDate: "2026-08-28",
         assigneeId: OWNER,
+        priority: "NORMAL" as const,
       },
     };
     const first = await repos.interactions.logInteraction(input);
@@ -130,6 +131,7 @@ describe("TaskRepository", () => {
     const { task } = await repos.tasks.create({
       title: "โทรกลับ",
       accountId: ACC,
+      priority: "NORMAL",
       clientRequestId: rid(),
     });
     expect(await repos.tasks.complete(task.id)).toBe(true);
@@ -148,6 +150,7 @@ describe("TaskRepository", () => {
         title,
         dueDate: due,
         assigneeId: assignee,
+        priority: "NORMAL",
         clientRequestId: rid(),
       });
     }

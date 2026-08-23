@@ -243,8 +243,14 @@ export interface ActivityRepository {
   ): Promise<Map<AccountId, Activity[]>>;
   /** Idempotent on clientRequestId; { created: false } = key already existed. */
   create(input: CreateActivityInput): Promise<{ activity: Activity; created: boolean }>;
-  update(id: ActivityId, patch: UpdateActivityPatch): Promise<Activity | null>;
-  /** Soft delete (spec §31) — false if already deleted or not found. */
+  /** Mutation + ACTIVITY_UPDATED audit row are one atomic logical write. */
+  update(
+    id: ActivityId,
+    patch: UpdateActivityPatch,
+    actor: UserId,
+  ): Promise<Activity | null>;
+  /** Soft delete (spec §31) + ACTIVITY_DELETED audit, atomic; false if
+   * already deleted or not found (no duplicate audit on retry). */
   softDelete(id: ActivityId, userId: UserId): Promise<boolean>;
   /** opportunity_id -> latest occurred_at, one grouped query (spec §27). */
   lastActivityByOpportunities(ids: OpportunityId[]): Promise<Map<string, string>>;
@@ -262,7 +268,9 @@ export interface CreateCrmTaskInput {
   dueDate?: string; // ISO date
   assigneeId?: UserId;
   createdBy?: UserId;
-  priority?: TaskPriority;
+  /** Canonical value decided by the application layer (domain default
+   * DEFAULT_TASK_PRIORITY) — adapters persist it verbatim. */
+  priority: TaskPriority;
   /** Idempotency key (stable schemes in lib/domain/activity.ts). */
   clientRequestId?: string;
 }

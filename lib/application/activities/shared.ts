@@ -8,6 +8,7 @@ import type {
   OpportunityId,
   UserId,
 } from "@/lib/types";
+import { DEFAULT_TASK_PRIORITY } from "@/lib/domain/activity";
 
 /** Business-rule violation surfaced to the UI as a readable message. */
 export class CrmError extends Error {}
@@ -63,10 +64,16 @@ export interface FollowUpIntent {
   nextState?: InteractionNextState;
 }
 
-/** FOLLOW_UP next-state and "Save + Create Follow-up" both need a next action. */
+/** FOLLOW_UP next-state and "Save + Create Follow-up" both need a next action
+ * AND a scheduled date — otherwise the follow-up can never surface in
+ * My Work Today bands (Step-3 review item 2). */
 export function validateNextState(input: FollowUpIntent): void {
-  if ((input.nextState === "FOLLOW_UP" || input.createFollowUp) && !input.nextAction) {
-    throw new CrmError("Next State แบบ FOLLOW_UP ต้องระบุ Next Action");
+  if (input.nextState === "FOLLOW_UP" || input.createFollowUp) {
+    if (!input.nextAction || !input.nextActionAt) {
+      throw new CrmError(
+        "Follow-up ต้องระบุทั้ง Next Action และวันเวลานัดติดตาม (nextActionAt)",
+      );
+    }
   }
 }
 
@@ -82,15 +89,20 @@ export function buildFollowUpTask(
   actor: UserId,
 ): Omit<CreateCrmTaskInput, "clientRequestId"> | undefined {
   if (!input.createFollowUp) return undefined;
-  if (!input.nextAction) throw new CrmError("Follow-up ต้องระบุ Next Action");
+  if (!input.nextAction || !input.nextActionAt) {
+    throw new CrmError(
+      "Follow-up ต้องระบุทั้ง Next Action และวันเวลานัดติดตาม (nextActionAt)",
+    );
+  }
   return {
     accountId: input.accountId,
     contactId: input.contactId as ContactId | undefined,
     opportunityId: input.opportunityId as OpportunityId | undefined,
     momentEventId: input.momentEventId as MomentEventId | undefined,
     title: input.nextAction,
-    dueDate: input.nextActionAt ? input.nextActionAt.slice(0, 10) : undefined,
+    dueDate: input.nextActionAt.slice(0, 10),
     assigneeId: actor,
     createdBy: actor,
+    priority: DEFAULT_TASK_PRIORITY,
   };
 }

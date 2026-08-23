@@ -88,6 +88,7 @@ describe("interaction use cases", () => {
       accountId: "ACC-007",
       body: "double click",
       nextAction: "โทรกลับ",
+      nextActionAt: "2026-08-26T09:00:00Z",
       createFollowUp: true,
       clientRequestId: rid(),
       createdBy: OWNER,
@@ -111,6 +112,29 @@ describe("interaction use cases", () => {
         createdBy: OWNER,
       }),
     ).rejects.toThrow(CrmError);
+  });
+
+  it("FOLLOW_UP with an action but no scheduled date is rejected (P1 fix 2)", async () => {
+    await expect(
+      createNote({
+        accountId: "ACC-006",
+        body: "x",
+        nextState: "FOLLOW_UP",
+        nextAction: "โทรกลับ",
+        clientRequestId: rid(),
+        createdBy: OWNER,
+      }),
+    ).rejects.toThrow(/nextActionAt/);
+    await expect(
+      createNote({
+        accountId: "ACC-006",
+        body: "x",
+        createFollowUp: true,
+        nextAction: "โทรกลับ",
+        clientRequestId: rid(),
+        createdBy: OWNER,
+      }),
+    ).rejects.toThrow(/nextActionAt/);
   });
 
   it("rejects a contact belonging to another account (review req 2)", async () => {
@@ -229,5 +253,51 @@ describe("task use cases", () => {
     const result = await completeTask("TSK-does-not-exist" as TaskId);
     expect(result.changed).toBe(false);
     expect(result.task).toBeNull();
+  });
+});
+
+describe("organization timezone boundaries (P1 fix 3)", () => {
+  it("orgLocalDate flips to the next day at Bangkok midnight, not UTC midnight", async () => {
+    const { orgLocalDate } = await import("@/lib/services/org-time");
+    // 23:59 ICT — still the 22nd in Bangkok even though UTC says 16:59 same day.
+    expect(orgLocalDate(new Date("2026-08-22T16:59:00Z"))).toBe("2026-08-22");
+    // 00:00 ICT — Bangkok is already the 23rd while UTC is still the 22nd.
+    expect(orgLocalDate(new Date("2026-08-22T17:00:00Z"))).toBe("2026-08-23");
+    // Late UTC evening: UTC date 22nd, Bangkok date 23rd.
+    expect(orgLocalDate(new Date("2026-08-22T20:30:00Z"))).toBe("2026-08-23");
+    // Configurable design: an explicit zone overrides the org default.
+    expect(orgLocalDate(new Date("2026-08-22T20:30:00Z"), "UTC")).toBe("2026-08-22");
+  });
+});
+
+describe("activity mutation audit (P1 fix 4)", () => {
+  it("update and delete write audit records with actor; retry-delete audits once", async () => {
+    const { MOCK_AUDIT_LOGS } = await import("@/lib/infrastructure/mock/repositories");
+    const { updateActivity, deleteActivity } = await import(
+      "@/lib/application/activities/update-activity"
+    );
+    const { activity } = await createNote({
+      accountId: "ACC-006",
+      body: "ก่อนแก้",
+      clientRequestId: rid(),
+      createdBy: OWNER,
+    });
+
+    await updateActivity({ activityId: activity.id, actor: OWNER, body: "หลังแก้" });
+    const updated = MOCK_AUDIT_LOGS.filter(
+      (r) => r.action === "ACTIVITY_UPDATED" && r.entityId === activity.id,
+    );
+    expect(updated).toHaveLength(1);
+    expect(updated[0].userId).toBe(OWNER);
+    expect(updated[0].before).toMatchObject({ body: "ก่อนแก้" });
+    expect(updated[0].after).toMatchObject({ body: "หลังแก้" });
+
+    await deleteActivity(activity.id, OWNER);
+    await deleteActivity(activity.id, OWNER); // idempotent retry
+    const deleted = MOCK_AUDIT_LOGS.filter(
+      (r) => r.action === "ACTIVITY_DELETED" && r.entityId === activity.id,
+    );
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0].userId).toBe(OWNER);
   });
 });

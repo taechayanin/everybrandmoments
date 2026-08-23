@@ -414,7 +414,8 @@ function buildTask(id: TaskId, input: CreateCrmTaskInput, now: string): CrmTask 
     dueDate: input.dueDate ?? null,
     assigneeId: input.assigneeId ?? null,
     createdBy: input.createdBy ?? null,
-    priority: input.priority ?? "NORMAL",
+    // Canonical value from the application layer — persisted verbatim.
+    priority: input.priority,
     status: "OPEN",
     completedAt: null,
     createdAt: now,
@@ -424,6 +425,18 @@ function buildTask(id: TaskId, input: CreateCrmTaskInput, now: string): CrmTask 
 
 const activityRequestKeys = new Map<string, ActivityId>();
 const taskRequestKeys = new Map<string, TaskId>();
+
+/** In-memory audit trail mirroring D1's audit_logs — exported so tests can
+ * assert the atomic mutation+audit contract (Step-3 review item 4). */
+export interface MockAuditRecord {
+  action: "ACTIVITY_UPDATED" | "ACTIVITY_DELETED";
+  entityId: string;
+  userId: UserId;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  createdAt: string;
+}
+export const MOCK_AUDIT_LOGS: MockAuditRecord[] = [];
 
 class MockActivityRepository implements ActivityRepository {
   async getById(id: ActivityId): Promise<Activity | null> {
@@ -491,22 +504,42 @@ class MockActivityRepository implements ActivityRepository {
     return { activity, created: true };
   }
 
-  async update(id: ActivityId, patch: UpdateActivityPatch): Promise<Activity | null> {
+  async update(
+    id: ActivityId,
+    patch: UpdateActivityPatch,
+    actor: UserId,
+  ): Promise<Activity | null> {
     const a = crmActivities.find((x) => x.id === id && !x.deletedAt);
     if (!a) return null;
-    if (patch.body !== undefined) a.body = patch.body;
-    if (patch.outcome !== undefined) a.outcome = patch.outcome;
-    if (patch.nextAction !== undefined) a.nextAction = patch.nextAction;
-    if (patch.nextActionAt !== undefined) a.nextActionAt = patch.nextActionAt;
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    if (patch.body !== undefined) { before.body = a.body; after.body = patch.body; a.body = patch.body; }
+    if (patch.outcome !== undefined) { before.outcome = a.outcome; after.outcome = patch.outcome; a.outcome = patch.outcome; }
+    if (patch.nextAction !== undefined) { before.nextAction = a.nextAction; after.nextAction = patch.nextAction; a.nextAction = patch.nextAction; }
+    if (patch.nextActionAt !== undefined) { before.nextActionAt = a.nextActionAt; after.nextActionAt = patch.nextActionAt; a.nextActionAt = patch.nextActionAt; }
+    if (Object.keys(after).length === 0) return a;
     a.updatedAt = new Date().toISOString();
+    MOCK_AUDIT_LOGS.push({
+      action: "ACTIVITY_UPDATED",
+      entityId: id,
+      userId: actor,
+      before,
+      after,
+      createdAt: a.updatedAt,
+    });
     return a;
   }
 
   async softDelete(id: ActivityId, userId: UserId): Promise<boolean> {
-    void userId;
     const a = crmActivities.find((x) => x.id === id && !x.deletedAt);
-    if (!a) return false;
+    if (!a) return false; // already deleted → no mutation, no audit (D1 parity)
     a.deletedAt = new Date().toISOString();
+    MOCK_AUDIT_LOGS.push({
+      action: "ACTIVITY_DELETED",
+      entityId: id,
+      userId,
+      createdAt: a.deletedAt,
+    });
     return true;
   }
 

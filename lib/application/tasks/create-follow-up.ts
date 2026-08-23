@@ -1,5 +1,6 @@
 import { getRepositories } from "@/lib/infrastructure";
 import type { CreateTaskInput } from "@/lib/contracts/crm";
+import { DEFAULT_TASK_PRIORITY } from "@/lib/domain/activity";
 import type { AccountId, CrmTask, TaskId, UserId } from "@/lib/types";
 import { CrmError, assertInteractionOwnership } from "../activities/shared";
 
@@ -43,7 +44,8 @@ export async function createFollowUp(
     dueDate: input.dueDate,
     assigneeId: (input.assigneeId as UserId | undefined) ?? input.createdBy,
     createdBy: input.createdBy,
-    priority: input.priority,
+    // Business default lives here, not in the adapter (review item 1).
+    priority: input.priority ?? DEFAULT_TASK_PRIORITY,
     clientRequestId: input.clientRequestId,
   });
 }
