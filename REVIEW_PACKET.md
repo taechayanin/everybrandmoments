@@ -6,8 +6,13 @@ Step 4 — CRM Activity Layer: Account 360 UI (Option A scope)
 ## Goal
 Account 360 เป็น daily workspace ของ Customer Solution: เปิดหน้าเดียว → เข้าใจ context → บันทึก interaction → สร้าง next action → ทำงานต่อ โดยไม่ออกจาก Moment OS — ตาม IMPLEMENTATION_PLAN.md + คำตัดสิน Option A (design PDF = visual language เท่านั้น)
 
-## COMMIT
-`98934e9`
+## COMMITS
+- `98934e9` feat(crm): Account 360 CRM UI (Step 4)
+- `dfbb454` fix(crm): step 4 review fixes — UTC normalization + contact idempotency
+
+## STEP-4 REVIEW FIXES (round 1)
+1. **occurredAt UTC normalization** — `lib/services/org-time.ts` เพิ่ม `orgLocalToUtcIso` (naive wall time ตีความเป็น Asia/Bangkok ผ่าน Intl offset computation — ไม่พึ่ง implicit parsing; ค่าที่มี zone ผ่านตรง) และ `utcToOrgLocalInput` (edit round-trip); use cases ทั้ง create/log/update normalize ก่อน persist; follow-up due DATE = วัน org-local ของ instant UTC; แสดงผลกลับด้วย Asia/Bangkok เดิม — เทสต์: local→UTC (13:15→06:15Z), boundary ข้ามวัน (00:30→17:30Z วันก่อน), UTC→display, round-trip 3 ค่า lossless, passthrough Z/+07:00, use-case persist จริง
+2. **Contact create idempotency** — migration `0005_contact_idempotency.sql` (ADD COLUMN client_request_id + partial unique index, applied local + smoke-tested: 2 INSERT key เดียว → 1 แถว); D1/mock create เป็น INSERT OR IGNORE + survivor read-back คืน `{contact, created}`; action คืน deduped; UI ทุก drawer ออก clientRequestId ใหม่หลัง submit สำเร็จ (สร้างสองรายการติดกันไม่ dedupe ผิด แต่ retry ของ submit เดิมยัง dedupe) + ปุ่ม disabled ระหว่าง pending — เทสต์ repo-level และ action-level (submit ซ้ำ → contact เดียว)
 
 ## FILES CHANGED
 - `app/accounts/[id]/page.tsx` — restructure: header (health badge, HOT priority, wallet) + Quick Actions bar + layout ซ้าย 2/3 (Activity Timeline นำ, Active Moments, Moment Timeline, Purchases) / ขวา 1/3 (Contacts, Tasks, Open Opportunities, Whitespace, Journey); timeline component remount ด้วย key เมื่อ head เปลี่ยน (bug ที่เจอจาก manual check — useState ไม่ sync props หลัง router.refresh)
@@ -46,7 +51,7 @@ createNoteAction, logCallAction, logMeetingAction, createTaskAction, completeTas
 - organization scope: ไม่เปลี่ยน — ทุก read/write ผ่าน use case → repo org-scoped; idempotency/immutable system activities คงเดิม; DEMO_USER ยังเป็น temporary actor (ไม่ใช่ production auth)
 
 ## TESTS
-94/94 passing (11 files) — Step 4 เพิ่ม 12 action-integration: Add Note / Log Call / Log Meeting สำเร็จ, FOLLOW_UP ไร้ nextActionAt → error อ่านรู้เรื่อง, strict zod ปฏิเสธ field แปลก + invalid form, business error (cross-account contact) โผล่เป็นข้อความ, write gate disabled บล็อกทุก write, Create Contact, Complete Task idempotent (deduped ครั้งสอง), timeline keyset 22 แถว 2 หน้า + contact hydration, type filter, malformed request → reject
+102/102 passing (11 files) — หลัง review fixes — Step 4 เพิ่ม 12 action-integration: Add Note / Log Call / Log Meeting สำเร็จ, FOLLOW_UP ไร้ nextActionAt → error อ่านรู้เรื่อง, strict zod ปฏิเสธ field แปลก + invalid form, business error (cross-account contact) โผล่เป็นข้อความ, write gate disabled บล็อกทุก write, Create Contact, Complete Task idempotent (deduped ครั้งสอง), timeline keyset 22 แถว 2 หน้า + contact hydration, type filter, malformed request → reject
 
 ## TYPECHECK
 PASS
@@ -65,9 +70,12 @@ PASS
 - หมายเหตุ: mock in-memory store reset เมื่อ dev-server HMR — dev artifact เท่านั้น (D1 durable); ยืนยันด้วยการทดสอบซ้ำหลัง module เสถียร
 - Screenshots: ถ่ายระหว่าง check ผ่าน Browser pane (อยู่ใน session log; ไม่ commit binary ลง repo)
 
+## REMAINING P2 (ตามที่ reviewer บันทึก)
+- Account 360 query count ~11 เทียบเป้า ~8 — latency ที่วัดได้ยังต่ำมาก (0.25s cold) จึงยอมรับ
+- Timeline filter/paging state reset หลัง mutation (key remount)
+
 ## KNOWN RISKS
 - Timeline อัปเดตด้วย key-remount → filter/loaded-pages reset หลังบันทึกใหม่ (ยอมรับได้ใน MVP; ปรับเป็น state sync ได้ถ้า reviewer ต้องการ)
-- Composer ส่ง `occurredAt` เป็น local datetime string (`YYYY-MM-DDTHH:mm`) — ผ่าน zod และแสดงกลับด้วยโซน Asia/Bangkok; ถ้าต้องการ normalize เป็น UTC ISO เต็มก่อน persist แจ้งได้
 - System activities (MOMENT_*, OPPORTUNITY_*) ยังไม่มีตัวเขียนจนกว่า Step 5 — filter chips เตรียมรองรับแล้ว
 - Migration 0004 ยัง local เท่านั้น — remote apply อยู่ใน pre-deploy gate
 
