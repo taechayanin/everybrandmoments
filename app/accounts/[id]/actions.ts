@@ -14,6 +14,7 @@ import {
   updateActivity,
 } from "@/lib/application/activities/update-activity";
 import { CrmError } from "@/lib/application/activities/shared";
+import { acceptSuggestion, ignoreSuggestion } from "@/lib/application/ai/decide-suggestion";
 import { createContact, updateContact } from "@/lib/application/contacts/create-contact";
 import { completeTask, createFollowUp } from "@/lib/application/tasks/create-follow-up";
 import { getAccountTimeline } from "@/lib/application/activities/get-account-timeline";
@@ -22,12 +23,14 @@ import {
   CreateContactSchema,
   CreateNoteSchema,
   CreateTaskSchema,
+  DecideSuggestionSchema,
   LoadTimelineSchema,
   LogCallSchema,
   LogMeetingSchema,
   UpdateActivitySchema,
   UpdateContactSchema,
 } from "@/lib/contracts/crm";
+import type { SuggestionId } from "@/lib/types";
 import { isActivityId } from "@/lib/domain/activity";
 import type { ActivityId, TaskId } from "@/lib/types";
 import {
@@ -155,6 +158,30 @@ export async function updateActivityAction(input: unknown): Promise<CrmActionRes
     });
     revalidatePath(`/accounts/${activity.accountId}`);
     return { ok: true };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function acceptSuggestionAction(input: unknown): Promise<CrmActionResult> {
+  if (!writesEnabled()) return { ok: false, error: WRITES_DISABLED_MESSAGE };
+  try {
+    const data = parseOr(DecideSuggestionSchema, input);
+    const result = await acceptSuggestion(data.suggestionId as SuggestionId, DEMO_USER);
+    revalidatePath(`/accounts/${result.accountId}`);
+    return { ok: true, deduped: !result.changed };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function ignoreSuggestionAction(input: unknown): Promise<CrmActionResult> {
+  if (!writesEnabled()) return { ok: false, error: WRITES_DISABLED_MESSAGE };
+  try {
+    const data = parseOr(DecideSuggestionSchema, input);
+    const result = await ignoreSuggestion(data.suggestionId as SuggestionId, DEMO_USER);
+    revalidatePath(`/accounts/${result.accountId}`);
+    return { ok: true, deduped: !result.changed };
   } catch (err) {
     return failure(err);
   }

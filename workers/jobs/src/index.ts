@@ -1,4 +1,5 @@
 import { JobSchema, type Job } from "../../../lib/jobs/contracts";
+import { analyzeActivityJob } from "./analyze-activity";
 import { detectMomentFromSignals } from "./detection";
 import { scanAnniversaries, scanInactiveAccounts } from "./rules";
 
@@ -167,6 +168,9 @@ async function handleJob(job: Job, env: JobsEnv): Promise<void> {
   switch (job.jobType) {
     case "DETECT_MOMENT":
       await detectMomentFromSignals(env.DB, job, env);
+      break;
+    case "ANALYZE_ACTIVITY":
+      await analyzeActivityJob(env.DB, job, env);
       break;
     case "SCORE_MOMENT":
     case "RECOMMEND_SOLUTIONS":

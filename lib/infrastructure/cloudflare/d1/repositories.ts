@@ -35,11 +35,13 @@ import type {
 } from "@/lib/types";
 import { WHITESPACE_CATEGORIES } from "@/lib/domain/account";
 import { ACTIVE_MOMENT_STATUSES } from "@/lib/domain/moment";
-import { followUpTaskKey } from "@/lib/domain/activity";
+import { followUpTaskKey, suggestionTaskKey } from "@/lib/domain/activity";
 import type {
   AccountRepository,
   AccountSearchInput,
   AccountStats,
+  AcceptSuggestionInput,
+  AcceptSuggestionOutcome,
   ActivityListOptions,
   ActivityRepository,
   AppointmentRepository,
@@ -64,6 +66,7 @@ import type {
   Repositories,
   SignalRepository,
   SolutionRepository,
+  SuggestionDecisionWriteRepository,
   SuggestionRepository,
   TaskDueBand,
   TaskRepository,
@@ -1674,6 +1677,157 @@ class D1SuggestionRepository implements SuggestionRepository {
   }
 }
 
+class D1SuggestionDecisionWriteRepository implements SuggestionDecisionWriteRepository {
+  constructor(private db: D1Database) {}
+
+  async acceptAtomic(input: AcceptSuggestionInput): Promise<AcceptSuggestionOutcome> {
+    const now = new Date().toISOString();
+    const acceptedGuard = `EXISTS (
+      SELECT 1 FROM activity_ai_suggestions
+      WHERE organization_id = ? AND id = ? AND status = 'ACCEPTED'
+    )`;
+    const dedupeKey = input.moment
+      ? `SUGGESTION:${ORG}:${input.accountId}:${input.moment.momentCode}:${input.suggestionId}`
+      : null;
+
+    const statements: D1PreparedStatement[] = [
+      this.db
+        .prepare(
+          `UPDATE activity_ai_suggestions
+           SET status = 'ACCEPTED', decided_at = ?, decided_by = ?
+           WHERE organization_id = ? AND id = ? AND status = 'PENDING'`,
+        )
+        .bind(now, input.userId, ORG, input.suggestionId),
+    ];
+    if (input.moment && dedupeKey) {
+      const m = input.moment;
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO moment_events (
+               id, organization_id, account_id, moment_code, sub_moment,
+               trigger_source, trigger_detail, detected_at, expected_event_date,
+               score_business_fit, score_intent, score_timing, score_wallet, score_relationship,
+               potential_wallet_min, potential_wallet_max,
+               recommended_action, status, next_expected_moment,
+               detection_confidence, detected_by, dedupe_key, created_at, updated_at
+             )
+             SELECT ?, ?, ?, ?, ?, 'CRM Note', ?, ?, ?, 15, ?, 10, 5, 5, 0, 0,
+                    ?, 'Detected', ?, ?, ?, ?, ?, ?
+             WHERE ${acceptedGuard}`,
+          )
+          .bind(
+            `ME-${crypto.randomUUID()}`, ORG, input.accountId, m.momentCode, m.subMoment,
+            m.reason, now.slice(0, 10), m.expectedEventDate,
+            Math.round(m.confidence * 20),
+            "Review Moment จาก AI Suggestion", m.momentCode,
+            m.confidence, "AI-SUGGESTION@1", dedupeKey, now, now,
+            ORG, input.suggestionId,
+          ),
+      );
+      for (const solutionId of m.solutionIds) {
+        statements.push(
+          this.db
+            .prepare(
+              `INSERT OR IGNORE INTO moment_event_solutions (moment_event_id, solution_id)
+               SELECT e.id, ? FROM moment_events e
+               WHERE e.organization_id = ? AND e.dedupe_key = ? AND ${acceptedGuard}`,
+            )
+            .bind(solutionId, ORG, dedupeKey, ORG, input.suggestionId),
+        );
+      }
+    }
+    if (input.task) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO tasks (
+               id, organization_id, account_id, title, due_date, assignee_id,
+               created_by, priority, status, client_request_id, created_at, updated_at
+             )
+             SELECT ?, ?, ?, ?, ?, ?, ?, 'NORMAL', 'OPEN', ?, ?, ?
+             WHERE ${acceptedGuard}`,
+          )
+          .bind(
+            `TSK-${crypto.randomUUID()}`, ORG, input.accountId, input.task.title,
+            input.task.dueDate ?? null, input.userId, input.userId,
+            suggestionTaskKey(input.suggestionId), now, now,
+            ORG, input.suggestionId,
+          ),
+      );
+    }
+    statements.push(
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO audit_logs (
+             id, organization_id, user_id, entity_type, entity_id, action, created_at
+           )
+           SELECT ?, ?, ?, 'activity_ai_suggestion', ?, 'SUGGESTION_ACCEPTED', ?
+           WHERE ${acceptedGuard}`,
+        )
+        .bind(
+          `AUD:SUG:${input.suggestionId}`, ORG, input.userId, input.suggestionId, now,
+          ORG, input.suggestionId,
+        ),
+    );
+
+    const results = await this.db.batch(statements);
+    const changed = ((results[0]?.meta as { changes?: number })?.changes ?? 0) > 0;
+
+    let momentEventId: string | null = null;
+    if (dedupeKey) {
+      momentEventId =
+        (
+          await this.db
+            .prepare(
+              "SELECT id FROM moment_events WHERE organization_id = ? AND dedupe_key = ?",
+            )
+            .bind(ORG, dedupeKey)
+            .first<{ id: string }>()
+        )?.id ?? null;
+    }
+    let taskId: string | null = null;
+    if (input.task) {
+      taskId =
+        (
+          await this.db
+            .prepare(
+              "SELECT id FROM tasks WHERE organization_id = ? AND client_request_id = ?",
+            )
+            .bind(ORG, suggestionTaskKey(input.suggestionId))
+            .first<{ id: string }>()
+        )?.id ?? null;
+    }
+    return { changed, momentEventId, taskId };
+  }
+
+  async ignoreAtomic(id: SuggestionId, userId: UserId): Promise<{ changed: boolean }> {
+    const now = new Date().toISOString();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE activity_ai_suggestions
+           SET status = 'IGNORED', decided_at = ?, decided_by = ?
+           WHERE organization_id = ? AND id = ? AND status = 'PENDING'`,
+        )
+        .bind(now, userId, ORG, id),
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO audit_logs (
+             id, organization_id, user_id, entity_type, entity_id, action, created_at
+           )
+           SELECT ?, ?, ?, 'activity_ai_suggestion', ?, 'SUGGESTION_IGNORED', ?
+           WHERE EXISTS (
+             SELECT 1 FROM activity_ai_suggestions
+             WHERE organization_id = ? AND id = ? AND status = 'IGNORED'
+           )`,
+        )
+        .bind(`AUD:SUG-IGN:${id}`, ORG, userId, id, now, ORG, id),
+    ]);
+    return { changed: ((results[0]?.meta as { changes?: number })?.changes ?? 0) > 0 };
+  }
+}
+
 class D1InteractionWriteRepository implements InteractionWriteRepository {
   constructor(
     private db: D1Database,
@@ -1772,6 +1926,7 @@ export async function createD1Repositories(): Promise<Repositories> {
     tasks,
     contacts: new D1ContactRepository(db),
     suggestions: new D1SuggestionRepository(db),
+    suggestionDecisions: new D1SuggestionDecisionWriteRepository(db),
     interactions: new D1InteractionWriteRepository(db, activities, tasks),
   };
 }

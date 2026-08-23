@@ -26,10 +26,12 @@ import type {
 } from "@/lib/types";
 import { isActiveMomentStatus } from "@/lib/domain/moment";
 import { priorityOf, totalScore } from "@/lib/domain/score";
-import { followUpTaskKey } from "@/lib/domain/activity";
+import { followUpTaskKey, suggestionTaskKey } from "@/lib/domain/activity";
 import type {
   AccountRepository,
   AccountStats,
+  AcceptSuggestionInput,
+  AcceptSuggestionOutcome,
   ActivityListOptions,
   ActivityRepository,
   AppointmentRepository,
@@ -54,6 +56,7 @@ import type {
   Repositories,
   SignalRepository,
   SolutionRepository,
+  SuggestionDecisionWriteRepository,
   SuggestionRepository,
   TaskDueBand,
   TaskRepository,
@@ -461,7 +464,11 @@ const contactRequestKeys = new Map<string, ContactId>();
 /** In-memory audit trail mirroring D1's audit_logs — exported so tests can
  * assert the atomic mutation+audit contract (Step-3 review item 4). */
 export interface MockAuditRecord {
-  action: "ACTIVITY_UPDATED" | "ACTIVITY_DELETED";
+  action:
+    | "ACTIVITY_UPDATED"
+    | "ACTIVITY_DELETED"
+    | "SUGGESTION_ACCEPTED"
+    | "SUGGESTION_IGNORED";
   entityId: string;
   userId: UserId;
   before?: Record<string, unknown>;
@@ -772,6 +779,95 @@ class MockSuggestionRepository implements SuggestionRepository {
   }
 }
 
+const suggestionOutcomes = new Map<string, AcceptSuggestionOutcome>();
+
+class MockSuggestionDecisionWriteRepository implements SuggestionDecisionWriteRepository {
+  constructor(
+    private moments: MockMomentRepository,
+    private tasks: MockTaskRepository,
+  ) {}
+
+  async acceptAtomic(input: AcceptSuggestionInput): Promise<AcceptSuggestionOutcome> {
+    const suggestion = crmSuggestions.find((s) => s.id === input.suggestionId);
+    if (!suggestion) return { changed: false, momentEventId: null, taskId: null };
+    if (suggestion.status === "IGNORED") {
+      return { changed: false, momentEventId: null, taskId: null };
+    }
+    if (suggestion.status === "ACCEPTED") {
+      const prior = suggestionOutcomes.get(input.suggestionId);
+      return {
+        changed: false,
+        momentEventId: prior?.momentEventId ?? null,
+        taskId: prior?.taskId ?? null,
+      };
+    }
+    suggestion.status = "ACCEPTED";
+    suggestion.decidedAt = new Date().toISOString();
+    suggestion.decidedBy = input.userId;
+
+    let momentEventId: string | null = null;
+    if (input.moment) {
+      const event = await this.moments.create({
+        accountId: input.accountId,
+        momentType: input.moment.momentCode,
+        subMoment: input.moment.subMoment,
+        stakeholders: [],
+        triggerSource: "CRM Note",
+        triggerDetail: input.moment.reason,
+        expectedEventDate: input.moment.expectedEventDate,
+        score: {
+          businessFit: 15,
+          intent: Math.round(input.moment.confidence * 20),
+          timing: 10,
+          wallet: 5,
+          relationship: 5,
+        },
+        potentialWalletMin: 0,
+        potentialWalletMax: 0,
+        ownerId: input.userId,
+      });
+      momentEventId = event.id;
+    }
+    let taskId: string | null = null;
+    if (input.task) {
+      const { task } = await this.tasks.create({
+        accountId: input.accountId,
+        title: input.task.title,
+        dueDate: input.task.dueDate,
+        assigneeId: input.userId,
+        createdBy: input.userId,
+        priority: "NORMAL",
+        clientRequestId: suggestionTaskKey(input.suggestionId),
+      });
+      taskId = task.id;
+    }
+    MOCK_AUDIT_LOGS.push({
+      action: "SUGGESTION_ACCEPTED",
+      entityId: input.suggestionId,
+      userId: input.userId,
+      createdAt: suggestion.decidedAt,
+    });
+    const outcome = { momentEventId, taskId };
+    suggestionOutcomes.set(input.suggestionId, { changed: true, ...outcome });
+    return { changed: true, ...outcome };
+  }
+
+  async ignoreAtomic(id: SuggestionId, userId: UserId): Promise<{ changed: boolean }> {
+    const suggestion = crmSuggestions.find((s) => s.id === id);
+    if (!suggestion || suggestion.status !== "PENDING") return { changed: false };
+    suggestion.status = "IGNORED";
+    suggestion.decidedAt = new Date().toISOString();
+    suggestion.decidedBy = userId;
+    MOCK_AUDIT_LOGS.push({
+      action: "SUGGESTION_IGNORED",
+      entityId: id,
+      userId,
+      createdAt: suggestion.decidedAt,
+    });
+    return { changed: true };
+  }
+}
+
 class MockInteractionWriteRepository implements InteractionWriteRepository {
   constructor(
     private activities: MockActivityRepository,
@@ -801,9 +897,10 @@ class MockInteractionWriteRepository implements InteractionWriteRepository {
 export function createMockRepositories(): Repositories {
   const activities = new MockActivityRepository();
   const tasks = new MockTaskRepository();
+  const moments = new MockMomentRepository();
   return {
     accounts: new MockAccountRepository(),
-    moments: new MockMomentRepository(),
+    moments,
     masterMoments: new MockMasterMomentRepository(),
     solutions: new MockSolutionRepository(),
     opportunities: new MockOpportunityRepository(),
@@ -814,6 +911,7 @@ export function createMockRepositories(): Repositories {
     tasks,
     contacts: new MockContactRepository(),
     suggestions: new MockSuggestionRepository(),
+    suggestionDecisions: new MockSuggestionDecisionWriteRepository(moments, tasks),
     interactions: new MockInteractionWriteRepository(activities, tasks),
   };
 }

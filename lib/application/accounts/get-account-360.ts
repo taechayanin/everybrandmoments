@@ -2,6 +2,7 @@ import type {
   Account,
   AccountId,
   Activity,
+  ActivitySuggestion,
   CrmContact,
   CrmTask,
   MomentEvent,
@@ -44,6 +45,8 @@ export interface Account360View {
   contacts: CrmContact[];
   taskBands: AccountTaskBands;
   openOpportunities: Opportunity[];
+  /** PENDING AI suggestions awaiting human decision (Step 6). */
+  pendingSuggestions: ActivitySuggestion[];
 }
 
 const ACCOUNT_TASK_LIMIT = 50;
@@ -55,7 +58,7 @@ export async function getAccount360(id: AccountId): Promise<Account360View | nul
 
   // Bounded reads only — one query per panel, batched hydration inside
   // (spec §53; no listAll on any path).
-  const [activeMoments, timeline, owner, crmPage, contacts, accountTasks, oppPage] =
+  const [activeMoments, timeline, owner, crmPage, contacts, accountTasks, oppPage, pendingSuggestions] =
     await Promise.all([
       repos.moments.findActiveByAccount(id),
       repos.moments.listByAccount(id),
@@ -64,6 +67,7 @@ export async function getAccount360(id: AccountId): Promise<Account360View | nul
       repos.contacts.listByAccount(id),
       repos.tasks.listByAccount(id, ACCOUNT_TASK_LIMIT),
       repos.opportunities.list({ limit: 100 }),
+      repos.suggestions.listPendingByAccount(id, 5),
     ]);
 
   const whitespaceGaps = (
@@ -107,6 +111,7 @@ export async function getAccount360(id: AccountId): Promise<Account360View | nul
     timelineContacts,
     contacts,
     taskBands,
+    pendingSuggestions,
     openOpportunities: oppPage.items.filter(
       (o) => o.accountId === id && !["Won", "Lost"].includes(o.stage),
     ),

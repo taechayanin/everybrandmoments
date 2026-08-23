@@ -10,6 +10,7 @@ import {
   StatusBadge,
 } from "@/components/ui";
 import { ActivityTimeline } from "@/components/crm/timeline";
+import { SuggestionsPanel } from "@/components/crm/suggestions-panel";
 import { ContactsPanel } from "@/components/crm/contacts-panel";
 import { QuickActions } from "@/components/crm/quick-actions";
 import { TasksPanel } from "@/components/crm/tasks-panel";
@@ -58,6 +59,7 @@ export default async function Account360({
     contacts,
     taskBands,
     openOpportunities,
+    pendingSuggestions,
   } = view;
   const topMoment = activeMoments[0];
 
@@ -134,6 +136,10 @@ export default async function Account360({
       <div className="mt-6 grid gap-6 xl:grid-cols-3">
         {/* Left — the working column: what did we last discuss */}
         <div className="space-y-6 xl:col-span-2">
+          {pendingSuggestions.length > 0 && (
+            <SuggestionsPanel suggestions={pendingSuggestions} />
+          )}
+
           <div>
             <SectionTitle
               title="Activity Timeline"

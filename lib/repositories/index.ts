@@ -361,6 +361,44 @@ export interface SuggestionRepository {
   listPendingByAccount(accountId: AccountId, limit: number): Promise<ActivitySuggestion[]>;
 }
 
+// ---------- AI suggestion decisions (plan rev 4, Step 6) ----------
+
+export interface AcceptSuggestionInput {
+  suggestionId: SuggestionId;
+  userId: UserId;
+  accountId: AccountId;
+  /** Catalog-validated by the use case; omitted = accept without a moment. */
+  moment?: {
+    momentCode: MomentCode;
+    subMoment: string;
+    reason: string;
+    expectedEventDate: string;
+    confidence: number;
+    solutionIds: SolutionId[];
+  };
+  /** From the suggestion's nextAction; omitted = no follow-up task. */
+  task?: { title: string; dueDate?: string };
+}
+
+export interface AcceptSuggestionOutcome {
+  /** false = the suggestion was already decided (idempotent no-op). */
+  changed: boolean;
+  momentEventId: string | null;
+  taskId: string | null;
+}
+
+export interface SuggestionDecisionWriteRepository {
+  /**
+   * ONE atomic write (D1: single db.batch). Dependent writes are conditional
+   * on the suggestion actually being ACCEPTED (INSERT..SELECT..WHERE EXISTS)
+   * and idempotent at row level (moment dedupe_key SUGGESTION:…, task key
+   * SUG:…, deterministic audit id) — PENDING accept writes exactly once,
+   * ACCEPTED retry duplicates nothing, IGNORED never creates records.
+   */
+  acceptAtomic(input: AcceptSuggestionInput): Promise<AcceptSuggestionOutcome>;
+  ignoreAtomic(id: SuggestionId, userId: UserId): Promise<{ changed: boolean }>;
+}
+
 // ---------- CRM interaction unit-of-work (plan rev 2 item 4) ----------
 
 export interface InteractionAuditInput {
@@ -417,5 +455,6 @@ export interface Repositories {
   tasks: TaskRepository;
   contacts: ContactRepository;
   suggestions: SuggestionRepository;
+  suggestionDecisions: SuggestionDecisionWriteRepository;
   interactions: InteractionWriteRepository;
 }

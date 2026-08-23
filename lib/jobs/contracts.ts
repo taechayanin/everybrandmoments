@@ -13,6 +13,7 @@ export const JOB_TYPES = [
   "CRM_SYNC",
   "ERP_SYNC",
   "NEXT_MOMENT",
+  "ANALYZE_ACTIVITY",
 ] as const;
 
 export type JobType = (typeof JOB_TYPES)[number];
@@ -21,6 +22,7 @@ const organizationId = z.string().regex(/^ORG-/);
 const accountId = z.string().regex(/^ACC-/);
 const signalId = z.string().regex(/^SIG-/);
 const momentEventId = z.string().regex(/^ME-/);
+const activityId = z.string().regex(/^ACT-/);
 
 export const DetectMomentJobSchema = z.object({
   jobType: z.literal("DETECT_MOMENT"),
@@ -33,6 +35,14 @@ export const DetectMomentJobSchema = z.object({
     .min(1)
     .max(50)
     .refine((ids) => new Set(ids).size === ids.length, "signalIds must be unique"),
+});
+
+/** CRM Activity → async AI enrichment (sprint Step 6; spec §20). */
+export const AnalyzeActivityJobSchema = z.object({
+  jobType: z.literal("ANALYZE_ACTIVITY"),
+  organizationId,
+  accountId,
+  activityId,
 });
 
 export const ScoreMomentJobSchema = z.object({
@@ -74,10 +84,12 @@ export const JobSchema = z.discriminatedUnion("jobType", [
   CrmSyncJobSchema,
   ErpSyncJobSchema,
   NextMomentJobSchema,
+  AnalyzeActivityJobSchema,
 ]);
 
 export type Job = z.infer<typeof JobSchema>;
 export type DetectMomentJob = z.infer<typeof DetectMomentJobSchema>;
+export type AnalyzeActivityJob = z.infer<typeof AnalyzeActivityJobSchema>;
 
 // ---------- AI / rule detection output (§40) ----------
 // Validated before any D1 insert; stores evidence, never a bare moment code.

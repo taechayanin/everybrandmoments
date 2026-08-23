@@ -1,4 +1,5 @@
 import { getRepositories } from "@/lib/infrastructure";
+import { enqueueActivityAnalysis } from "@/lib/services/analysis-queue";
 import type { LogCallInput } from "@/lib/contracts/crm";
 import type { AccountId, ContactId, UserId } from "@/lib/types";
 import type { CreatedInteraction } from "./create-note";
@@ -20,7 +21,7 @@ export async function logCall(
   // Org-local wall time -> UTC ISO before anything is persisted (fix 1).
   input = normalizeInteractionTimes(input);
 
-  return repos.interactions.logInteraction({
+  const result = await repos.interactions.logInteraction({
     activity: {
       accountId,
       contactId: input.contactId as ContactId | undefined,
@@ -45,4 +46,13 @@ export async function logCall(
     },
     followUpTask: buildFollowUpTask({ ...input, accountId }, input.createdBy),
   });
+  // Async AI enrichment (Step 6): fire-and-forget after the committed
+  // write — enqueue failure can never fail the save (spec §55).
+  if (!result.deduped) {
+    await enqueueActivityAnalysis({
+      accountId,
+      activityId: result.activity.id,
+    });
+  }
+  return result;
 }
