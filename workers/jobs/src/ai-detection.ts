@@ -77,7 +77,12 @@ export interface AiDetectorEnv {
  * the queue redelivers (exhausted retries land in the DLQ).
  */
 export type AiDetectionOutcome =
-  | { type: "success"; result: DetectionResult; model: string }
+  | {
+      type: "success";
+      result: DetectionResult;
+      model: string;
+      usage?: { inputTokens: number; outputTokens: number };
+    }
   | { type: "fallback"; reason: "no_api_key" | "refusal" | "invalid_output" | "empty_output" }
   | { type: "retry"; error: Error };
 
@@ -143,7 +148,17 @@ export async function detectWithAI(
       );
       return { type: "fallback", reason: "invalid_output" };
     }
-    return { type: "success", result: parsed.data, model: completion.model };
+    return {
+      type: "success",
+      result: parsed.data,
+      model: completion.model,
+      usage: completion.usage
+        ? {
+            inputTokens: completion.usage.prompt_tokens,
+            outputTokens: completion.usage.completion_tokens,
+          }
+        : undefined,
+    };
   } catch (err) {
     // 401/429/5xx/timeouts: fail loudly so the queue retries and, after
     // max_retries, the message lands in the DLQ — never a silent keyword

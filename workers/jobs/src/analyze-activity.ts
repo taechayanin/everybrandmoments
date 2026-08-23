@@ -123,7 +123,12 @@ export function classifyAnalysisError(err: unknown): "config" | "transient" {
 }
 
 export type AiAnalysisOutcome =
-  | { type: "success"; result: import("../../../lib/contracts/crm").ActivityAnalysisOutput; model: string }
+  | {
+      type: "success";
+      result: import("../../../lib/contracts/crm").ActivityAnalysisOutput;
+      model: string;
+      usage?: { inputTokens: number; outputTokens: number };
+    }
   | { type: "skip"; reason: "no_api_key" | "refusal" | "invalid_output" | "empty_output" }
   | { type: "retry"; error: Error; category: "config" | "transient" };
 
@@ -180,7 +185,17 @@ export async function analyzeWithAI(
       );
       return { type: "skip", reason: "invalid_output" };
     }
-    return { type: "success", result: parsed.data, model: completion.model };
+    return {
+      type: "success",
+      result: parsed.data,
+      model: completion.model,
+      usage: completion.usage
+        ? {
+            inputTokens: completion.usage.prompt_tokens,
+            outputTokens: completion.usage.completion_tokens,
+          }
+        : undefined,
+    };
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     return { type: "retry", error, category: classifyAnalysisError(err) };
@@ -373,6 +388,8 @@ export async function analyzeActivityJob(
       confidence: payload.confidence,
       momentsSuggested: payload.detectedMomentCodes.length,
       solutionsSuggested: payload.recommendedSolutionIds.length,
+      inputTokens: outcome.usage?.inputTokens,
+      outputTokens: outcome.usage?.outputTokens,
       ms: Date.now() - startedAt,
     }),
   );
