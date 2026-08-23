@@ -1,20 +1,67 @@
-import type { AccountId, MomentEventId, OpportunityId, UserId } from "./ids";
+import type {
+  AccountId,
+  IndustryId,
+  MomentEventId,
+  OpportunityId,
+  ProjectTypeId,
+  UserId,
+} from "./ids";
 import type { Channel } from "./moment";
+import { isSelectableProjectType } from "./industry";
 
-/**
- * Commercial pipeline stage — a separate state machine from
- * MomentEventStatus (refactor plan §10).
- */
-export type OpportunityStage =
-  | "Discovery"
-  | "Solution Design"
-  | "Proposal"
-  | "Negotiation"
-  | "Won"
-  | "Lost";
+// Project Pipeline Step 2 — the Opportunity entity IS the "Project"
+// (plan §1: evolution, not duplication). Two separate axes:
+//   Project Status  (lifecycle):  DRAFT → ACTIVE → WON | LOST | CANCELLED
+//   Sales Stage     (funnel, ACTIVE only): NEW_BRIEF → … → NEGOTIATION
+// DRAFT/WON/LOST/CANCELLED never carry a stage — enforced here, by zod at the
+// boundary, AND by paired CHECK constraints in migration 0010 (drift test).
 
-export const OPPORTUNITY_STAGES: readonly OpportunityStage[] = [
-  "Discovery", "Solution Design", "Proposal", "Negotiation", "Won", "Lost",
+export type ProjectStatus = "DRAFT" | "ACTIVE" | "WON" | "LOST" | "CANCELLED";
+
+export const PROJECT_STATUSES: readonly ProjectStatus[] = [
+  "DRAFT", "ACTIVE", "WON", "LOST", "CANCELLED",
+];
+
+export type SalesStage =
+  | "NEW_BRIEF"
+  | "DISCOVERY"
+  | "QUALIFIED"
+  | "SOLUTION_DESIGN"
+  | "PROPOSAL"
+  | "NEGOTIATION";
+
+export const SALES_STAGES: readonly SalesStage[] = [
+  "NEW_BRIEF", "DISCOVERY", "QUALIFIED", "SOLUTION_DESIGN", "PROPOSAL", "NEGOTIATION",
+];
+
+export function isProjectStatus(v: string): v is ProjectStatus {
+  return (PROJECT_STATUSES as readonly string[]).includes(v);
+}
+
+export function isSalesStage(v: string): v is SalesStage {
+  return (SALES_STAGES as readonly string[]).includes(v);
+}
+
+/** Thai-first UI labels (handoff §18) — codes stay language-neutral. */
+export const PROJECT_STATUS_TH: Record<ProjectStatus, string> = {
+  DRAFT: "ฉบับร่าง",
+  ACTIVE: "กำลังดำเนินการ",
+  WON: "ปิดสำเร็จ",
+  LOST: "ไม่สำเร็จ",
+  CANCELLED: "ยกเลิก",
+};
+
+export const SALES_STAGE_TH: Record<SalesStage, string> = {
+  NEW_BRIEF: "บรีฟใหม่",
+  DISCOVERY: "ค้นหาความต้องการ",
+  QUALIFIED: "ผ่านคุณสมบัติ",
+  SOLUTION_DESIGN: "ออกแบบโซลูชัน",
+  PROPOSAL: "ใบเสนอราคา",
+  NEGOTIATION: "ต่อรอง",
+};
+
+export const CLOSED_PROJECT_STATUSES: readonly ProjectStatus[] = [
+  "WON", "LOST", "CANCELLED",
 ];
 
 export interface Opportunity {
@@ -22,19 +69,134 @@ export interface Opportunity {
   momentEventId: MomentEventId;
   accountId: AccountId;
   name: string;
+  status: ProjectStatus;
+  /** Non-null exactly when status = ACTIVE (paired CHECK in 0010). */
+  salesStage: SalesStage | null;
+  /** Commercial context snapshot on the project itself (plan P1 #1) —
+   * null only while DRAFT / on unmapped legacy rows. */
+  industryId: IndustryId | null;
+  subIndustryId: IndustryId | null;
+  /** Master reference only — PT-UNSPECIFIED marks migrated legacy rows and
+   * never satisfies activation for new projects. Null only while DRAFT. */
+  projectTypeId: ProjectTypeId | null;
+  brief: string | null;
   expectedRevenue: number;
   expectedGP: number; // 0..1
-  closeDate: string;
-  stage: OpportunityStage;
+  closeDate: string; // expected close (ISO date)
+  expectedDeliveryDate: string | null;
   ownerId: UserId;
   nextAction: string;
+  nextActionDate: string | null; // org-local ISO date
+  lostReason: string | null;
+  cancelReason: string | null;
+  clientRequestId: string | null;
   slaHours?: number;
   channel?: Channel;
   /** ISO — the no-contact fallback reference when no activity exists yet. */
   createdAt: string;
+  updatedAt: string;
 }
 
-export const CLOSED_OPPORTUNITY_STAGES: readonly OpportunityStage[] = ["Won", "Lost"];
+/** status ↔ stage pairing — the one rule every row must satisfy. */
+export function isValidStatusStagePair(
+  status: ProjectStatus,
+  salesStage: SalesStage | null,
+): boolean {
+  return status === "ACTIVE" ? salesStage !== null : salesStage === null;
+}
+
+/**
+ * Activation gate (DRAFT → ACTIVE, reviewer §17): every required context
+ * field, and the project type must be a REAL selectable master entry —
+ * PT-UNSPECIFIED never satisfies activation for new projects.
+ * Returns the list of missing/invalid fields (empty = may activate).
+ */
+export interface ActivationGateInput {
+  accountId: AccountId | null;
+  industryId: IndustryId | null;
+  momentEventId: MomentEventId | null;
+  projectTypeId: ProjectTypeId | null;
+  ownerId: UserId | null;
+  expectedRevenue: number | null;
+  nextAction: string | null;
+  nextActionDate: string | null;
+}
+
+export function activationGateErrors(input: ActivationGateInput): string[] {
+  const errors: string[] = [];
+  if (!input.accountId) errors.push("account");
+  if (!input.industryId) errors.push("industry");
+  if (!input.momentEventId) errors.push("moment");
+  if (!input.projectTypeId || !isSelectableProjectType(input.projectTypeId)) {
+    errors.push("project_type");
+  }
+  if (!input.ownerId) errors.push("owner");
+  if (input.expectedRevenue === null || input.expectedRevenue < 0) {
+    errors.push("estimated_revenue");
+  }
+  if (!input.nextAction?.trim()) errors.push("next_action");
+  if (!input.nextActionDate) errors.push("next_action_date");
+  return errors;
+}
+
+/**
+ * Legacy stage → status × salesStage (migration 0010 mapping, plan §1).
+ * Closed rows keep NO synthetic closing stage (reviewer decision #2).
+ * The same mapping drives the mock fixtures and the 0010 CASE SQL.
+ */
+export function legacyStageToStatusStage(legacy: string): {
+  status: ProjectStatus;
+  salesStage: SalesStage | null;
+} {
+  switch (legacy) {
+    case "Discovery":
+      return { status: "ACTIVE", salesStage: "DISCOVERY" };
+    case "Solution Design":
+      return { status: "ACTIVE", salesStage: "SOLUTION_DESIGN" };
+    case "Proposal":
+      return { status: "ACTIVE", salesStage: "PROPOSAL" };
+    case "Negotiation":
+      return { status: "ACTIVE", salesStage: "NEGOTIATION" };
+    case "Won":
+      return { status: "WON", salesStage: null };
+    case "Lost":
+      return { status: "LOST", salesStage: null };
+    default:
+      throw new Error(`Unknown legacy opportunity stage: ${legacy}`);
+  }
+}
+
+/** lost_reason backfill for legacy Lost rows (0010) — historical truth is
+ * "no reason recorded", never a fabricated business reason. */
+export const LEGACY_LOST_REASON = "legacy: ไม่ได้บันทึกเหตุผล (ข้อมูลเก่า)";
+
+// ---------- Project ↔ Contact roles (handoff §24 Step 3) ----------
+
+export type ProjectContactRole =
+  | "DECISION_MAKER"
+  | "CHAMPION"
+  | "PROCUREMENT"
+  | "MAIN_CONTACT";
+
+export const PROJECT_CONTACT_ROLES: readonly ProjectContactRole[] = [
+  "DECISION_MAKER", "CHAMPION", "PROCUREMENT", "MAIN_CONTACT",
+];
+
+// ---------- Stage history (schema foundation for Step-3 atomic writes) ----------
+
+export interface ProjectStageHistoryEntry {
+  id: string;
+  opportunityId: OpportunityId;
+  fromStatus: ProjectStatus | null; // null = creation
+  toStatus: ProjectStatus;
+  fromStage: SalesStage | null;
+  toStage: SalesStage | null;
+  reason: string | null;
+  changedBy: UserId | null;
+  changedAt: string;
+}
+
+// ---------- Risk rule ----------
 
 /** No-contact risk threshold (spec §27) — one canonical rule for counters
  * and per-row display alike. */
@@ -55,13 +217,15 @@ export function daysSinceOpportunityContact(
   );
 }
 
+/** Only ACTIVE projects carry commercial risk — DRAFT and closed never do
+ * (plan rev 2). */
 export function isOpportunityAtRisk(
-  stage: OpportunityStage,
+  status: ProjectStatus,
   lastActivityAt: string | null,
   createdAt: string,
   now: Date,
 ): boolean {
-  if (CLOSED_OPPORTUNITY_STAGES.includes(stage)) return false;
+  if (status !== "ACTIVE") return false;
   return daysSinceOpportunityContact(lastActivityAt, createdAt, now) >= NO_CONTACT_RISK_DAYS;
 }
 

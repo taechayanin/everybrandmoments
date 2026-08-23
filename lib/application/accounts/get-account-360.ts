@@ -1,3 +1,4 @@
+import { CLOSED_PROJECT_STATUSES } from "@/lib/domain/opportunity";
 import type {
   Account,
   AccountId,
@@ -113,7 +114,7 @@ export async function getAccount360(id: AccountId): Promise<Account360View | nul
     taskBands,
     pendingSuggestions,
     openOpportunities: oppPage.items.filter(
-      (o) => o.accountId === id && !["Won", "Lost"].includes(o.stage),
+      (o) => o.accountId === id && !CLOSED_PROJECT_STATUSES.includes(o.status),
     ),
   };
 }

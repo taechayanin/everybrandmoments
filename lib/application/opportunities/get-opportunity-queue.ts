@@ -33,8 +33,6 @@ export interface OpportunityQueueView {
   inProposalOrNegotiation: number;
 }
 
-const CLOSED = new Set(["Won", "Lost"]);
-
 export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
   const repos = await getRepositories();
   // Bounded page (review P2): production never loads the full table.
@@ -77,7 +75,7 @@ export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
         lastAt, opportunity.createdAt, clockNow,
       ),
       atRisk: isOpportunityAtRisk(
-        opportunity.stage, lastAt, opportunity.createdAt, clockNow,
+        opportunity.status, lastAt, opportunity.createdAt, clockNow,
       ),
       nextFollowUp: nextTasks.get(opportunity.id) ?? null,
     });
@@ -88,7 +86,8 @@ export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
       (b.event ? totalScore(b.event.score) : 0) - (a.event ? totalScore(a.event.score) : 0),
   );
 
-  const open = rows.filter((r) => !CLOSED.has(r.opportunity.stage));
+  // Open pipeline = ACTIVE only — DRAFT is not commercial pipeline yet.
+  const open = rows.filter((r) => r.opportunity.status === "ACTIVE");
   return {
     rows,
     openCount: open.length,
@@ -98,8 +97,10 @@ export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
       (s, r) => s + r.opportunity.expectedRevenue * r.opportunity.expectedGP,
       0,
     ),
-    inProposalOrNegotiation: rows.filter((r) =>
-      ["Proposal", "Negotiation"].includes(r.opportunity.stage),
+    inProposalOrNegotiation: rows.filter(
+      (r) =>
+        r.opportunity.salesStage !== null &&
+        ["PROPOSAL", "NEGOTIATION"].includes(r.opportunity.salesStage),
     ).length,
   };
 }

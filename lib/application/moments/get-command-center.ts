@@ -118,8 +118,8 @@ export async function getCommandCenter(userId: UserId): Promise<CommandCenterVie
     newThisWeek: workStats.newThisWeek,
     newToday: workStats.newToday,
     qualifiedCount: workStats.qualifiedActive,
-    proposals: opportunitiesPage.items.filter((o) =>
-      ["Proposal", "Negotiation"].includes(o.stage),
+    proposals: opportunitiesPage.items.filter(
+      (o) => o.salesStage !== null && ["PROPOSAL", "NEGOTIATION"].includes(o.salesStage),
     ),
     wonThisMonth: workStats.wonThisMonth,
     atRiskCount: accountStats.atRiskCount,

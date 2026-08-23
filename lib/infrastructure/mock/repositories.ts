@@ -25,6 +25,12 @@ import type {
   UserId,
 } from "@/lib/types";
 import { isActiveMomentStatus } from "@/lib/domain/moment";
+import {
+  activationGateErrors,
+  isValidStatusStagePair,
+  type ProjectContactRole,
+  type ProjectStageHistoryEntry,
+} from "@/lib/domain/opportunity";
 import { priorityOf, totalScore } from "@/lib/domain/score";
 import {
   ANALYZABLE_ACTIVITY_TYPES,
@@ -35,6 +41,7 @@ import type {
   AccountRepository,
   AccountStats,
   AcceptSuggestionInput,
+  AddProjectContactInput,
   AcceptSuggestionOutcome,
   ActivityListOptions,
   ActivityRepository,
@@ -58,6 +65,7 @@ import type {
   MomentWorkStats,
   OpportunityRepository,
   Paginated,
+  ProjectContactLink,
   ProjectTypeRepository,
   Repositories,
   SignalRepository,
@@ -376,6 +384,13 @@ class MockSolutionRepository implements SolutionRepository {
 }
 
 class MockOpportunityRepository implements OpportunityRepository {
+  private stageHistory: ProjectStageHistoryEntry[] = [];
+  private projectContacts: { opportunityId: OpportunityId; contactId: ContactId; role: ProjectContactRole }[] = [];
+  private solutionLinks = new Map<OpportunityId, Set<SolutionId>>();
+  private byClientRequest = new Map<string, OpportunityId>();
+
+  constructor(private contactsRepo: MockContactRepository) {}
+
   async getById(id: OpportunityId): Promise<Opportunity | null> {
     return opportunities.find((o) => o.id === id) ?? null;
   }
@@ -389,11 +404,139 @@ class MockOpportunityRepository implements OpportunityRepository {
     return [...opportunities];
   }
 
-  async create(input: CreateOpportunityInput): Promise<Opportunity> {
+  async create(
+    input: CreateOpportunityInput,
+  ): Promise<{ opportunity: Opportunity; created: boolean }> {
+    // Same invariants D1 enforces via CHECKs + unique indexes.
+    if (!isValidStatusStagePair(input.status, input.salesStage)) {
+      throw new Error("status/sales_stage pairing violated");
+    }
+    if (input.status === "ACTIVE") {
+      // A NEW project may only be created ACTIVE through the full gate —
+      // PT-UNSPECIFIED and missing context are rejected here (legacy rows
+      // enter via fixtures/migration, never via create()).
+      const errors = activationGateErrors({
+        accountId: input.accountId,
+        industryId: input.industryId ?? null,
+        momentEventId: input.momentEventId,
+        projectTypeId: input.projectTypeId ?? null,
+        ownerId: input.ownerId,
+        expectedRevenue: input.expectedRevenue,
+        nextAction: input.nextAction,
+        nextActionDate: input.nextActionDate ?? null,
+      });
+      if (errors.length > 0) {
+        throw new Error(`activation gate failed: ${errors.join(", ")}`);
+      }
+    }
+    // FK integrity (D1 enforces via REFERENCES).
+    if (!ACCOUNTS.some((a) => a.id === input.accountId)) {
+      throw new Error(`Unknown account: ${input.accountId}`);
+    }
+    if (!events.some((e) => e.id === input.momentEventId)) {
+      throw new Error(`Unknown moment event: ${input.momentEventId}`);
+    }
+    if (input.industryId && !industryById.has(input.industryId)) {
+      throw new Error(`Unknown industry: ${input.industryId}`);
+    }
+    if (input.subIndustryId && !industryById.has(input.subIndustryId)) {
+      throw new Error(`Unknown sub-industry: ${input.subIndustryId}`);
+    }
+    if (input.projectTypeId && !projectTypeById.has(input.projectTypeId)) {
+      throw new Error(`Unknown project type: ${input.projectTypeId}`);
+    }
+    // Idempotency — the surviving row wins, nothing is written twice.
+    if (input.clientRequestId) {
+      const existing = this.byClientRequest.get(input.clientRequestId);
+      if (existing) {
+        const opportunity = await this.getById(existing);
+        if (opportunity) return { opportunity, created: false };
+      }
+    }
     const id = `OPP-2026-${String(opportunities.length + 1).padStart(3, "0")}` as OpportunityId;
-    const opp: Opportunity = { id, createdAt: new Date().toISOString(), ...input };
-    opportunities.push(opp);
-    return opp;
+    const now = new Date().toISOString();
+    const opportunity: Opportunity = {
+      id,
+      momentEventId: input.momentEventId,
+      accountId: input.accountId,
+      name: input.name,
+      status: input.status,
+      salesStage: input.salesStage,
+      industryId: input.industryId ?? null,
+      subIndustryId: input.subIndustryId ?? null,
+      projectTypeId: input.projectTypeId ?? null,
+      brief: input.brief ?? null,
+      expectedRevenue: input.expectedRevenue,
+      expectedGP: input.expectedGP,
+      closeDate: input.closeDate,
+      expectedDeliveryDate: input.expectedDeliveryDate ?? null,
+      ownerId: input.ownerId,
+      nextAction: input.nextAction,
+      nextActionDate: input.nextActionDate ?? null,
+      lostReason: null,
+      cancelReason: null,
+      clientRequestId: input.clientRequestId ?? null,
+      channel: input.channel,
+      createdAt: now,
+      updatedAt: now,
+    };
+    opportunities.push(opportunity);
+    if (input.clientRequestId) this.byClientRequest.set(input.clientRequestId, id);
+    // First stage-history entry (creation) — same batch semantics as D1.
+    this.stageHistory.push({
+      id: `PSH-${id}-0`,
+      opportunityId: id,
+      fromStatus: null,
+      toStatus: input.status,
+      fromStage: null,
+      toStage: input.salesStage,
+      reason: "created",
+      changedBy: input.createdBy ?? input.ownerId,
+      changedAt: now,
+    });
+    // opportunity_solutions persistence (Step-2 bug fix).
+    if (input.solutionIds?.length) {
+      this.solutionLinks.set(id, new Set(input.solutionIds));
+    }
+    return { opportunity, created: true };
+  }
+
+  async listSolutionIds(id: OpportunityId): Promise<SolutionId[]> {
+    return [...(this.solutionLinks.get(id) ?? [])];
+  }
+
+  async listStageHistory(id: OpportunityId): Promise<ProjectStageHistoryEntry[]> {
+    return this.stageHistory.filter((h) => h.opportunityId === id);
+  }
+
+  async addProjectContact(input: AddProjectContactInput): Promise<{ added: boolean }> {
+    if (!opportunities.some((o) => o.id === input.opportunityId)) {
+      throw new Error(`Unknown opportunity: ${input.opportunityId}`);
+    }
+    // Same-organization membership (D1: INSERT … SELECT WHERE EXISTS).
+    const contact = await this.contactsRepo.getById(input.contactId);
+    if (!contact) {
+      throw new Error(`Contact not in organization: ${input.contactId}`);
+    }
+    const dup = this.projectContacts.some(
+      (pc) =>
+        pc.opportunityId === input.opportunityId &&
+        pc.contactId === input.contactId &&
+        pc.role === input.role,
+    );
+    if (dup) return { added: false };
+    this.projectContacts.push({
+      opportunityId: input.opportunityId,
+      contactId: input.contactId,
+      role: input.role,
+    });
+    return { added: true };
+  }
+
+  async listProjectContacts(id: OpportunityId): Promise<ProjectContactLink[]> {
+    return this.projectContacts
+      .filter((pc) => pc.opportunityId === id)
+      .map((pc) => ({ contactId: pc.contactId, role: pc.role }));
   }
 }
 
@@ -1016,6 +1159,7 @@ export function createMockRepositories(): Repositories {
   const activities = new MockActivityRepository();
   const tasks = new MockTaskRepository();
   const moments = new MockMomentRepository();
+  const contacts = new MockContactRepository();
   return {
     accounts: new MockAccountRepository(),
     moments,
@@ -1023,13 +1167,13 @@ export function createMockRepositories(): Repositories {
     industries: new MockIndustryRepository(),
     projectTypes: new MockProjectTypeRepository(),
     solutions: new MockSolutionRepository(),
-    opportunities: new MockOpportunityRepository(),
+    opportunities: new MockOpportunityRepository(contacts),
     users: new MockUserRepository(),
     appointments: new MockAppointmentRepository(),
     signals: new MockSignalRepository(),
     activities,
     tasks,
-    contacts: new MockContactRepository(),
+    contacts,
     suggestions: new MockSuggestionRepository(),
     suggestionDecisions: new MockSuggestionDecisionWriteRepository(moments, tasks),
     interactions: new MockInteractionWriteRepository(activities, tasks),

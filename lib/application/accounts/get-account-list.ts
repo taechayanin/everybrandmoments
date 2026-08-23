@@ -91,7 +91,7 @@ export async function getAccountList(
   }
   const openOpps = new Map<string, { count: number; value: number }>();
   for (const o of oppPage.items) {
-    if (["Won", "Lost"].includes(o.stage)) continue;
+    if (o.status !== "ACTIVE") continue;
     const entry = openOpps.get(o.accountId) ?? { count: 0, value: 0 };
     entry.count += 1;
     entry.value += o.expectedRevenue;

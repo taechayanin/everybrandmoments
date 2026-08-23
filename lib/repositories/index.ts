@@ -22,8 +22,12 @@ import type {
   Industry,
   IndustryId,
   MasterMoment,
+  ProjectContactRole,
+  ProjectStageHistoryEntry,
+  ProjectStatus,
   ProjectType,
   ProjectTypeId,
+  SalesStage,
   MomentCode,
   MomentEvent,
   MomentEventId,
@@ -31,7 +35,6 @@ import type {
   MomentSignal,
   Opportunity,
   OpportunityId,
-  OpportunityStage,
   Priority,
   ScoreBreakdown,
   Solution,
@@ -209,13 +212,39 @@ export interface CreateOpportunityInput {
   momentEventId: MomentEventId;
   accountId: AccountId;
   name: string;
+  /** Paired with salesStage — ACTIVE ⇔ salesStage non-null; a NEW project
+   * created ACTIVE must pass the full activation gate (selectable type,
+   * next_action_date, …) — enforced by both adapters. */
+  status: ProjectStatus;
+  salesStage: SalesStage | null;
+  industryId?: IndustryId | null;
+  subIndustryId?: IndustryId | null;
+  projectTypeId?: ProjectTypeId | null;
+  brief?: string | null;
   expectedRevenue: number;
   expectedGP: number;
   closeDate: string;
-  stage: OpportunityStage;
+  expectedDeliveryDate?: string | null;
   ownerId: UserId;
   nextAction: string;
+  nextActionDate?: string | null;
   channel?: Channel;
+  /** Retry/double-submit protection — unique per organization. */
+  clientRequestId?: string;
+  /** Persisted into opportunity_solutions (Step-2 bug fix). */
+  solutionIds?: SolutionId[];
+  createdBy?: UserId;
+}
+
+export interface AddProjectContactInput {
+  opportunityId: OpportunityId;
+  contactId: ContactId;
+  role: ProjectContactRole;
+}
+
+export interface ProjectContactLink {
+  contactId: ContactId;
+  role: ProjectContactRole;
 }
 
 export interface OpportunityRepository {
@@ -224,7 +253,16 @@ export interface OpportunityRepository {
   list(input: { limit: number; cursor?: string }): Promise<Paginated<Opportunity>>;
   /** Unbounded — mock/tests and small internal aggregates only. */
   listAll(): Promise<Opportunity[]>;
-  create(input: CreateOpportunityInput): Promise<Opportunity>;
+  /** Idempotent when clientRequestId is set — { created: false } returns the
+   * surviving row. Writes the first stage-history entry and the
+   * opportunity_solutions links in the same atomic batch. */
+  create(input: CreateOpportunityInput): Promise<{ opportunity: Opportunity; created: boolean }>;
+  listSolutionIds(id: OpportunityId): Promise<SolutionId[]>;
+  listStageHistory(id: OpportunityId): Promise<ProjectStageHistoryEntry[]>;
+  /** { added: false } = duplicate (opportunity, contact, role). Throws on a
+   * contact outside the organization or unknown opportunity. */
+  addProjectContact(input: AddProjectContactInput): Promise<{ added: boolean }>;
+  listProjectContacts(id: OpportunityId): Promise<ProjectContactLink[]>;
 }
 
 // ---------- CRM Activities (sprint Step 2) ----------

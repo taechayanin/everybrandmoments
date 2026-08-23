@@ -1,6 +1,30 @@
 import type { Appointment, Opportunity } from "@/lib/types";
+import {
+  LEGACY_LOST_REASON,
+  legacyStageToStatusStage,
+} from "@/lib/domain/opportunity";
+import { UNSPECIFIED_PROJECT_TYPE_ID } from "@/lib/domain/industry";
+import { ACCOUNTS } from "./accounts";
 
-export const OPPORTUNITIES: Opportunity[] = [
+/** Pre-0010 fixture shape — kept verbatim; mapped below exactly like the
+ * migration maps legacy rows (drift-tested). */
+interface LegacyOpportunitySeed {
+  id: Opportunity["id"];
+  createdAt: string;
+  momentEventId: Opportunity["momentEventId"];
+  accountId: Opportunity["accountId"];
+  name: string;
+  expectedRevenue: number;
+  expectedGP: number;
+  closeDate: string;
+  stage: string;
+  ownerId: Opportunity["ownerId"];
+  nextAction: string;
+  slaHours?: number;
+  channel?: Opportunity["channel"];
+}
+
+const LEGACY_OPPORTUNITIES: LegacyOpportunitySeed[] = [
   {
     id: "OPP-2026-001",
     createdAt: "2026-08-01T02:00:00Z",
@@ -160,6 +184,30 @@ export const OPPORTUNITIES: Opportunity[] = [
     nextAction: "นัด Workshop ออกแบบร่วมกับทีม Marketing",
   },
 ];
+
+// Same mapping as migration 0010: status×stage from legacy stage, industry
+// snapshot from the account, PT-UNSPECIFIED sentinel, legacy lost reason.
+const accountIndustry = new Map(ACCOUNTS.map((a) => [a.id, a.industryId]));
+
+export const OPPORTUNITIES: Opportunity[] = LEGACY_OPPORTUNITIES.map((o) => {
+  const { stage, ...rest } = o;
+  const { status, salesStage } = legacyStageToStatusStage(stage);
+  return {
+    ...rest,
+    status,
+    salesStage,
+    industryId: accountIndustry.get(o.accountId) ?? null,
+    subIndustryId: null,
+    projectTypeId: UNSPECIFIED_PROJECT_TYPE_ID,
+    brief: null,
+    expectedDeliveryDate: null,
+    nextActionDate: null,
+    lostReason: status === "LOST" ? LEGACY_LOST_REASON : null,
+    cancelReason: null,
+    clientRequestId: null,
+    updatedAt: o.createdAt,
+  };
+});
 
 export const APPOINTMENTS: Appointment[] = [
   {

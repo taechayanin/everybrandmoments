@@ -40,14 +40,21 @@ export async function createOpportunity(
     solutions.reduce((sum, s) => sum + (s?.grossMarginTarget ?? 0), 0) /
     Math.max(solutions.length, 1);
 
-  const opportunity = await repos.opportunities.create({
+  // Post-0010: the workspace flow creates a DRAFT project — it has no real
+  // project type or next-action date yet, so it may NOT enter the active
+  // funnel (activation gate; the Step-3 wizard activates with full context).
+  // Industry snapshots from the account onto the project (plan P1 #1).
+  const { opportunity } = await repos.opportunities.create({
     momentEventId: event.id,
     accountId: account.id,
     name: `${account.name} — ${event.subMoment}`,
+    status: "DRAFT",
+    salesStage: null,
+    industryId: account.industryId,
+    solutionIds: input.solutionIds,
     expectedRevenue,
     expectedGP,
     closeDate: event.expectedEventDate,
-    stage: "Discovery",
     ownerId: input.ownerId,
     nextAction: `เตรียม Solution Brief (${input.channelMode === "OFFLINE" ? "นัด Offline" : "Online"})`,
     channel: input.channel,

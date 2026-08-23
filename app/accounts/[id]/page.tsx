@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { PROJECT_STATUS_TH, SALES_STAGE_TH } from "@/lib/domain/opportunity";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Check, Sparkles, X } from "lucide-react";
 import {
@@ -272,7 +273,7 @@ export default async function Account360({
                     <p className="text-xs font-semibold text-slate-800">{o.name}</p>
                     <p className="mt-0.5 flex items-center justify-between text-[11px] text-slate-500">
                       <span className="rounded bg-indigo-50 px-1.5 py-0.5 font-semibold text-indigo-700">
-                        {o.stage}
+                        {o.salesStage ? SALES_STAGE_TH[o.salesStage] : PROJECT_STATUS_TH[o.status]}
                       </span>
                       <span className="font-bold text-slate-700">{baht(o.expectedRevenue)}</span>
                     </p>

@@ -18,7 +18,8 @@ describe("createOpportunity use case", () => {
 
     expect(opp.id.startsWith("OPP-")).toBe(true);
     expect(opp.accountId).toBe("ACC-001");
-    expect(opp.stage).toBe("Discovery");
+    expect(opp.status).toBe("DRAFT");
+    expect(opp.salesStage).toBeNull();
     expect(opp.expectedRevenue).toBeGreaterThan(0);
 
     const repos = await getRepositories();

@@ -1,40 +1,49 @@
 # REVIEW PACKET
 
 ## Step
-Project Pipeline Step 1 — Thai Masters / Master Data Foundation
+Project Pipeline Step 2 — Project Schema Evolution
 
 ## COMMIT
-(ดู git log — 1 logical commit: `feat(masters): Thai industry/project-type masters + Thai moment names (Pipeline Step 1)`)
+1 logical commit: `feat(project): status×stage schema, stage history, project contacts, idempotent create (Pipeline Step 2)`
 
-## MASTERS CREATED
-- `industries` — 14 กลุ่มบนสุด (handoff §20) + 24 sub-industries seed (สุขภาพครบ 6 ตาม handoff; กลุ่มอื่นเท่าที่ demo data ต้องใช้ + ธรรมชาติของกลุ่ม) = **38 แถว**; parent_id FK self-reference ลึก 1 ชั้นเท่านั้น (เทสต์บังคับ); uniqueness: ชื่อกลุ่ม unique ทั้งตาราง (partial index parent IS NULL), ชื่อ sub unique ภายในกลุ่ม (partial index parent IS NOT NULL)
-- `project_types` — 8 ประเภทเลือกได้ + 1 sentinel = **9 แถว**; `selectable` + `active` CHECK (0,1); ชื่อไทย unique
-- Canonical source = `lib/domain/industry.ts` (INDUSTRIES / PROJECT_TYPES / LEGACY_INDUSTRY_MAP) — migration และ seed **ถูกตรึงกับ constants ด้วย drift tests** (แบบเดียวกับ activity CHECKs)
+## PROJECT SCHEMA (migration 0010 — LOCAL only)
+`opportunities` rebuild (pattern 0004): **status** (5 ค่า) + **sales_stage** (6 ค่า, nullable) + context บน project เอง — `industry_id` / `sub_industry_id` (optional) / `project_type_id` (**master FK เท่านั้น — ไม่มี canonical free text**) / `moment_event_id` (NOT NULL เดิม) + commercial: `brief`, `expected_delivery_date`, `next_action_date`, `lost_reason`, `cancel_reason` + hardening: `client_request_id` (partial unique ต่อ org), `created_by`, `updated_at` + indexes (owner+status, account, org+status+stage)
 
-## THAI MOMENT MAPPING
-- `THAI_MOMENT_NAMES: Record<MomentCode, string>` — **type system บังคับ 1:1 กับ 20 codes เดิม** (key ขาด/เกิน = compile error) + เทสต์ยืนยันชื่อไม่ซ้ำ ไม่ว่าง
-- `master_moments.thai_name` คอลัมน์ใหม่ + `MasterMoment.thaiName` ใน domain — **code เดิม ("EBM Start" ฯลฯ) ไม่ถูกแตะแม้แต่ตัวเดียว** (FK/data ผูกอยู่); mapping ตาม handoff §19 เช่น EBM Expand → ขยายธุรกิจ
+## STATUS × STAGE INVARIANTS (บังคับระดับ D1 — ไม่พึ่ง TS/Zod อย่างเดียว)
+CHECKs ใน schema จริง (พิสูจน์ด้วย negative smoke ทุกข้อ):
+- `(status='ACTIVE') = (sales_stage IS NOT NULL)` — DRAFT/WON/LOST/CANCELLED บังคับ stage NULL, ACTIVE บังคับ non-null ✅ (ทดสอบยิง INSERT ผิดจริง → `CHECK constraint failed`)
+- `status<>'LOST' OR lost_reason IS NOT NULL` ✅ · `status<>'CANCELLED' OR cancel_reason IS NOT NULL`
+- ACTIVE ขั้นต่ำระดับ DB: `industry_id + project_type_id + owner_id + next_action NOT NULL` ✅
+- FK ทุกตัว (industry/sub/type/account/moment/owner) — invalid FK ถูกปฏิเสธจริง ✅
+- ส่วนของ gate ที่ DB แยกไม่ได้ (selectable type + next_action_date — legacy ACTIVE ถือ PT-UNSPECIFIED/date NULL ได้โดยชอบ) บังคับที่ domain `activationGateErrors()` + repo create ทั้ง mock/D1 → **สร้างใหม่แบบ ACTIVE ด้วย PT-UNSPECIFIED = reject** (เทสต์)
 
-## INDUSTRY / SUB-INDUSTRY
-- Repositories ใหม่ mock/D1 parity: `IndustryRepository {listAll (groups ก่อน subs), getById}` — D1 ใช้ master cache 60s แบบเดียวกับ master_moments
-- `accounts.industry_id` (FK, nullable) + backfill จาก free text เดิมผ่าน `LEGACY_INDUSTRY_MAP` (17 label → master id) — **ผล local: 20/20 accounts map ได้ครบ, unmapped = 0, FK ผิด = 0**; คอลัมน์ `industry` เดิมคงไว้เป็น display legacy ตามแผน; `Account.industryId` ใน domain แล้ว (mock derive จาก map เดียวกัน = lockstep กับ D1)
+## COMMERCIAL CONTEXT
+Intelligence key ครบบน project: `industry_id + moment_event_id + project_type_id`; DRAFT ไม่สมบูรณ์ได้ (นโยบาย "Draft may be incomplete"); sub_industry optional ทั้ง gate และ schema; workspace flow เดิม (`createOpportunity`) ปรับเป็นสร้าง **DRAFT** + snapshot industry จาก account — ยังไม่มี real project type จึงห้ามเข้า funnel จนกว่า Step-3 wizard activate
 
-## PROJECT TYPES
-`เปิดสาขาใหม่ · รีแบรนด์ · Onboarding/Welcome Kit · Seasonal/Festival Campaign · Launch Event · Corporate Gifting · Uniform Program · Loyalty/Repeat Program` + `PT-UNSPECIFIED "ไม่ระบุ (ข้อมูลเก่า)"`
-- `ProjectTypeRepository {listAll, getById, listSelectable}` — `listSelectable()` คือทางเดียวที่ UI สร้าง Project ใหม่จะเรียก
+## LEGACY MIGRATION (historical truth — ไม่ fabricate)
+Mapping เอกสารในหัว 0010 + `legacyStageToStatusStage()` (source เดียว, drift-tested):
+`Discovery→(ACTIVE,DISCOVERY)` · `Solution Design→(ACTIVE,SOLUTION_DESIGN)` · `Proposal→(ACTIVE,PROPOSAL)` · `Negotiation→(ACTIVE,NEGOTIATION)` · `Won→(WON,NULL)` · `Lost→(LOST,NULL)` — **ไม่มี synthetic closing stage**; `industry_id` จาก account ณ เวลา migrate; `project_type_id='PT-UNSPECIFIED'` (sentinel legacy เท่านั้น); Lost เดิม → `lost_reason = "legacy: ไม่ได้บันทึกเหตุผล (ข้อมูลเก่า)"`; moment_event_id คงเดิม — **ผลจริง local D1**: 12 แถว → ACTIVE 11 (D5/SD2/P2/N2), WON 1, legacy_pt 12/12, industry 12/12, lost ไร้เหตุผล 0
 
-## UNSPECIFIED LEGACY RULE (reviewer decision #4)
-- `selectable = 0` ระดับ schema + `isSelectableProjectType()` ระดับ domain คืน false + `listSelectable()` ไม่มีมันอยู่ — เทสต์ยืนยันทั้งสามชั้น
-- ยังโผล่ใน `listAll()` เพื่อ render label ของแถว legacy เท่านั้น
-- การบังคับที่ activation gate (project ใหม่ห้ามใช้แม้ส่งตรง ๆ) เป็นของ Step 2/3 ตาม state machine — helper พร้อมแล้ว
+## STAGE HISTORY
+`project_stage_history` (from/to_status + from/to_stage + reason + changed_by + changed_at + client_request_id unique) — `create()` เขียน entry แรก (creation) ใน **`db.batch()` เดียว** กับ opportunity+solutions+audit → รากฐาน atomic update+history+audit ของ Step 3; ไม่ fabricate history ให้แถว migrate (analytics เริ่มนับไปข้างหน้า); `listStageHistory()` mock/D1 parity
 
-## MIGRATION / SEED
-- `migrations/0009_thai_masters.sql` — **applied LOCAL เท่านั้น** (`--local` ✅; remote ยังค้าง 0004–0009 ตามเกต PRE_DEPLOY): ตาราง+index+CHECK, insert masters 38+9, thai_name backfill 20, accounts backfill 17 UPDATEs
-- `scripts/generate-seed.ts` + `seed/seed.sql` regenerate: industries/project_types อยู่ใน CLEAR_ORDER (ลบ accounts ก่อนเสมอ — FK), master_moments insert รวม thai_name, accounts insert รวม industry_id
-- **Idempotence พิสูจน์จริง**: รัน seed ซ้ำบน local D1 → counts เท่าเดิมทุกตาราง (38/9/20) ไม่ duplicate
+## PROJECT CONTACTS
+`project_contacts` — 4 roles CHECK (`DECISION_MAKER/CHAMPION/PROCUREMENT/MAIN_CONTACT`), `UNIQUE (opportunity_id, contact_id, role)` (duplicate → `{added:false}` ไม่ throw; พิสูจน์ระดับ D1 ด้วย UNIQUE smoke ✅); same-org บังคับใน INSERT…SELECT WHERE EXISTS (contact ต่าง org → throw, เทสต์); same-account enforcement จองไว้ที่ use case Step 3 ตามคำสั่ง
+
+## SOLUTION RELATIONS (ปิดบั๊กเดิม)
+`CreateOpportunityInput.solutionIds` → persist ลง `opportunity_solutions` ใน batch เดียวกับ create (INSERT OR IGNORE = retry-safe); `listSolutionIds()` อ่านกลับ; workspace flow ส่ง solutionIds ที่เคย validate-แล้วทิ้ง เข้า join จริงแล้ว — ไม่แตะ design ของ Solution system
+
+## IDEMPOTENCY
+`client_request_id` partial unique ต่อ org + create ใช้ INSERT OR IGNORE + survivor read-back: request เดิมซ้ำ → `{created:false}` คืนแถวเดิม, history ไม่เบิ้ล (id deterministic `PSH:<req>`), solutions/audit ไม่เบิ้ล (OR IGNORE + deterministic ids) — เทสต์ mock + UNIQUE smoke จริงบน D1 ✅
+
+## D1 SMOKE (local จริงทั้งหมด)
+- Legacy mapping: status×stage distribution ถูกต้อง 12/12 ✅
+- Negative: ACTIVE+NULL stage ✗ / DRAFT+stage ✗ / LOST ไร้ reason ✗ / ACTIVE ไร้ industry ✗ / FK ปลอม ✗ — ทุกตัว fail ด้วย CHECK/FK ตรงข้อความคาด ✅
+- Unique: client_request_id ซ้ำ ✗, project_contacts ซ้ำ ✗ ✅ (ลบ smoke rows แล้ว)
+- Seed regenerate + apply + rerun: schema ใหม่ครบ ไม่ duplicate ✅
 
 ## TESTS
-**165/165 passing** (+4 real-API smoke ข้ามเมื่อไม่มี key) — Step 1 เพิ่ม 15: industry uniqueness (id/group name/sub-in-group), 14 groups ตรงเป๊ะ, sub→parent ถูกกลุ่ม+ลึก 1 ชั้น, project type uniqueness, UNSPECIFIED ไม่ selectable (domain+repo), listSelectable ตัด sentinel, Thai names 1:1 กับ 20 codes + ไม่ซ้ำ, repo semantics (groups-first, getById), mock accounts industryId ตรง legacy map + map ครบ 20/20, legacy map targets มีจริงใน master, drift migration 0009 (industries/types/thai/backfill/constraints ครบทุกแถว), seed deterministic (DELETE ก่อน INSERT + row counts + ACC-001 มี industry_id)
+**180/180 passing** (+4 real-API smoke ข้าม) — Step 2 เพิ่ม 15 ครอบทุกข้อที่สั่ง: pairing ทั้ง 5 status (domain+repo), activation gate ทุก field + PT-UNSPECIFIED reject + sub optional, invalid FK reject, stage history entry แรก, duplicate contact + cross-org guard, legacy conversion ทุก stage + unknown throw, fixtures ตรง 0010 mapping, solution persistence, idempotency (row+history ไม่เบิ้ล), drift 0010 (CASE mapping + CHECKs + unique + tables ครบ) — เทสต์เดิม 165 ตัว **ปรับตาม field ใหม่โดยคง semantics เดิมทุกข้อ ไม่มีการลบ/อ่อนแรง**
 
 ## TYPECHECK
 PASS
@@ -46,12 +55,13 @@ PASS (0 errors, 0 warnings)
 PASS
 
 ## DEVIATIONS
-- ไม่มี deviation จาก scope — เพิ่มเติมเล็กน้อยที่อยู่ในเจตนา Step 1: `Account.industryId` ถูก expose ใน domain type แล้ว (เตรียม prefill ของ Step 2 wizard โดยไม่ต้องแตะ read path อีกครั้ง) — ไม่มี UI เปลี่ยน, ไม่มี write path ใหม่, ไม่แตะ opportunity schema
+- **Workspace create → DRAFT**: flow เดิมสร้าง stage "Discovery" ตรง ๆ; หลัง 0010 การสร้างใหม่แบบ ACTIVE ต้องผ่าน gate เต็ม (ซึ่ง flow เดิมไม่มี project type/next-action date) จึง map เป็น DRAFT + snapshot industry — ตรง invariant, Step-3 wizard เป็นผู้ activate; queue/360 แสดงแถว DRAFT ด้วย Thai badge ("ฉบับร่าง") แล้ว
+- UI ปรับเท่าที่จำเป็นให้ compile/แสดงถูก (StageBadge → status×stage Thai labels, pipeline strip → 6 sales stages): ไม่ใช่ Board/List ใหม่ — นั่นคือ Step 4
 
 ## KNOWN RISKS
-- `master_moments.thai_name` เป็น nullable ระดับ DB (SQLite ADD COLUMN จำกัด) — domain บังคับ NOT NULL ผ่าน type + drift test; D1 mapper fallback ไป description ถ้าเจอแถวเก่าผิดปกติ
-- Sub-industries กลุ่ม FINANCE/REALESTATE/MANUFACT/GOV/AUTO/EDU/LOGISTICS ยังไม่มี seed (เพิ่มผ่าน master ได้ — ไม่มี demo account ใช้)
-- Migration 0009 ยังไม่ apply remote (ถูกต้องตามเกต — เข้าคิวต่อจาก 0004–0008 ใน PRE_DEPLOY sequence)
+- KPI "open" เดิมทุกจุดเปลี่ยนเป็น `status='ACTIVE'` (DRAFT ไม่นับ pipeline) — ตรงแผน แต่ตัวเลขบนหน้าจอจะต่างจากก่อน (DRAFT แยกออก)
+- Won/Lost legacy ไม่มี closing stage (ตัดสินใจ #2) — conversion analytics เริ่มจาก history ไปข้างหน้า
+- 0010 ยังไม่ apply remote (คิว PRE_DEPLOY: 0004–0010 + preflights ที่หัวไฟล์)
 
 ## NEXT PROPOSED STEP
-Step 2 — Project Schema Evolution (migration 0010: status×stage + context บน project + stage_history + project_contacts + repositories)
+Step 3 — Project Use Cases (createProject wizard backend / activateProject / updateStage / closeProject+cancelProject / next-action enforcement / risk rule)

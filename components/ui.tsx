@@ -1,11 +1,12 @@
 import { momentColor } from "@/lib/domain/master-moments";
+import { PROJECT_STATUS_TH, SALES_STAGE_TH } from "@/lib/domain/opportunity";
 import {
   PRIORITY_STYLE,
   avatarColor,
   initials,
   priorityOf,
 } from "@/lib/format";
-import type { MomentEventStatus, OpportunityStage, Priority } from "@/lib/types";
+import type { MomentEventStatus, ProjectStatus, SalesStage, Priority } from "@/lib/types";
 
 export function Card({
   children,
@@ -126,20 +127,32 @@ export function StatusBadge({ status }: { status: MomentEventStatus }) {
 }
 
 const STAGE_STYLE: Record<string, string> = {
-  Discovery: "bg-blue-50 text-blue-700",
-  "Solution Design": "bg-purple-50 text-purple-700",
-  Proposal: "bg-amber-50 text-amber-700",
-  Negotiation: "bg-orange-50 text-orange-700",
-  Won: "bg-emerald-50 text-emerald-700",
-  Lost: "bg-slate-100 text-slate-500 line-through",
+  DRAFT: "bg-slate-100 text-slate-500",
+  NEW_BRIEF: "bg-cyan-50 text-cyan-700",
+  DISCOVERY: "bg-blue-50 text-blue-700",
+  QUALIFIED: "bg-indigo-50 text-indigo-700",
+  SOLUTION_DESIGN: "bg-purple-50 text-purple-700",
+  PROPOSAL: "bg-amber-50 text-amber-700",
+  NEGOTIATION: "bg-orange-50 text-orange-700",
+  WON: "bg-emerald-50 text-emerald-700",
+  LOST: "bg-slate-100 text-slate-500 line-through",
+  CANCELLED: "bg-slate-100 text-slate-400 line-through",
 };
 
-export function StageBadge({ stage }: { stage: OpportunityStage }) {
+export function StageBadge({
+  status,
+  salesStage,
+}: {
+  status: ProjectStatus;
+  salesStage: SalesStage | null;
+}) {
+  const key = salesStage ?? status;
+  const label = salesStage ? SALES_STAGE_TH[salesStage] : PROJECT_STATUS_TH[status];
   return (
     <span
-      className={`inline-flex rounded-md px-2 py-0.5 text-[11px] font-medium ${STAGE_STYLE[stage] ?? "bg-slate-100 text-slate-600"}`}
+      className={`inline-flex rounded-md px-2 py-0.5 text-[11px] font-medium ${STAGE_STYLE[key] ?? "bg-slate-100 text-slate-600"}`}
     >
-      {stage}
+      {label}
     </span>
   );
 }

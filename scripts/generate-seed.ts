@@ -168,7 +168,7 @@ for (const sig of MOCK_SIGNALS) {
 
 for (const o of OPPORTUNITIES) {
   lines.push(
-    `INSERT INTO opportunities (id, organization_id, moment_event_id, account_id, name, expected_revenue, expected_gp, close_date, stage, owner_id, next_action, sla_hours, channel, created_at, updated_at) VALUES (${q(o.id)}, ${q(ORG)}, ${q(o.momentEventId)}, ${q(o.accountId)}, ${q(o.name)}, ${o.expectedRevenue}, ${o.expectedGP}, ${q(o.closeDate)}, ${q(o.stage)}, ${q(o.ownerId)}, ${q(o.nextAction)}, ${o.slaHours ?? "NULL"}, ${q(o.channel ?? null)}, ${q(NOW)}, ${q(NOW)});`,
+    `INSERT INTO opportunities (id, organization_id, moment_event_id, account_id, name, status, sales_stage, industry_id, sub_industry_id, project_type_id, brief, expected_revenue, expected_gp, close_date, expected_delivery_date, owner_id, next_action, next_action_date, lost_reason, cancel_reason, client_request_id, sla_hours, channel, created_by, created_at, updated_at) VALUES (${q(o.id)}, ${q(ORG)}, ${q(o.momentEventId)}, ${q(o.accountId)}, ${q(o.name)}, ${q(o.status)}, ${q(o.salesStage)}, ${q(o.industryId)}, ${q(o.subIndustryId)}, ${q(o.projectTypeId)}, ${q(o.brief)}, ${o.expectedRevenue}, ${o.expectedGP}, ${q(o.closeDate)}, ${q(o.expectedDeliveryDate)}, ${q(o.ownerId)}, ${q(o.nextAction)}, ${q(o.nextActionDate)}, ${q(o.lostReason)}, ${q(o.cancelReason)}, ${q(o.clientRequestId)}, ${o.slaHours ?? "NULL"}, ${q(o.channel ?? null)}, NULL, ${q(NOW)}, ${q(NOW)});`,
   );
 }
 

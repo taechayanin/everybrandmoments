@@ -9,7 +9,7 @@ import {
   StatCard,
 } from "@/components/ui";
 import { getOpportunityQueue } from "@/lib/application/opportunities/get-opportunity-queue";
-import { OPPORTUNITY_STAGES } from "@/lib/domain/opportunity";
+import { SALES_STAGES, SALES_STAGE_TH } from "@/lib/domain/opportunity";
 import { priorityOf, totalScore } from "@/lib/domain/score";
 import { SLA_BY_PRIORITY, baht, pct, shortDate } from "@/lib/format";
 
@@ -39,8 +39,8 @@ export default async function OpportunityQueue() {
           Opportunity Pipeline (Commercial Stages)
         </p>
         <div className="flex min-w-[600px] items-center gap-1">
-          {OPPORTUNITY_STAGES.map((stage, i, arr) => {
-            const count = view.rows.filter((r) => r.opportunity.stage === stage).length;
+          {SALES_STAGES.map((stage, i, arr) => {
+            const count = view.rows.filter((r) => r.opportunity.salesStage === stage).length;
             return (
               <div key={stage} className="flex items-center gap-1">
                 <div
@@ -48,7 +48,7 @@ export default async function OpportunityQueue() {
                     count > 0 ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-400"
                   }`}
                 >
-                  <p className="text-[10px] font-semibold leading-tight">{stage}</p>
+                  <p className="text-[10px] font-semibold leading-tight">{SALES_STAGE_TH[stage]}</p>
                   <p className="text-xs font-bold">{count}</p>
                 </div>
                 {i < arr.length - 1 && <span className="text-slate-300">→</span>}
@@ -95,7 +95,7 @@ export default async function OpportunityQueue() {
                   <td className="px-4 py-3 text-xs text-slate-600">{shortDate(o.closeDate)}</td>
                   <td className="px-4 py-3 text-[11px] text-slate-500">{ownerName}</td>
                   <td className="px-4 py-3">
-                    <StageBadge stage={o.stage} />
+                    <StageBadge status={o.status} salesStage={o.salesStage} />
                     {e && (
                       <p className="mt-1 text-[10px] text-slate-400">
                         {SLA_BY_PRIORITY[priorityOf(score)]}

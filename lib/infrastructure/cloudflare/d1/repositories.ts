@@ -17,8 +17,12 @@ import type {
   Industry,
   IndustryId,
   MasterMoment,
+  ProjectContactRole,
+  ProjectStageHistoryEntry,
+  ProjectStatus,
   ProjectType,
   ProjectTypeId,
+  SalesStage,
   MomentCode,
   MomentEvent,
   MomentEventId,
@@ -37,6 +41,10 @@ import type {
   UserId,
   WhitespaceCategory,
 } from "@/lib/types";
+import {
+  activationGateErrors,
+  isValidStatusStagePair,
+} from "@/lib/domain/opportunity";
 import { WHITESPACE_CATEGORIES } from "@/lib/domain/account";
 import { ACTIVE_MOMENT_STATUSES } from "@/lib/domain/moment";
 import {
@@ -63,8 +71,10 @@ import type {
   CreateSuggestionInput,
   InteractionWriteRepository,
   LogInteractionInput,
+  AddProjectContactInput,
   IndustryRepository,
   MasterMomentRepository,
+  ProjectContactLink,
   ProjectTypeRepository,
   MomentListFilter,
   MomentRadarQuery,
@@ -235,15 +245,26 @@ function mapOpportunity(r: Row): Opportunity {
     momentEventId: r.moment_event_id as MomentEventId,
     accountId: r.account_id as AccountId,
     name: r.name,
+    status: r.status as ProjectStatus,
+    salesStage: (r.sales_stage as SalesStage | null) ?? null,
+    industryId: (r.industry_id as IndustryId | null) ?? null,
+    subIndustryId: (r.sub_industry_id as IndustryId | null) ?? null,
+    projectTypeId: (r.project_type_id as ProjectTypeId | null) ?? null,
+    brief: r.brief ?? null,
     expectedRevenue: r.expected_revenue,
     expectedGP: r.expected_gp,
     closeDate: r.close_date ?? "",
-    stage: r.stage,
+    expectedDeliveryDate: r.expected_delivery_date ?? null,
     ownerId: r.owner_id as UserId,
     nextAction: r.next_action ?? "",
+    nextActionDate: r.next_action_date ?? null,
+    lostReason: r.lost_reason ?? null,
+    cancelReason: r.cancel_reason ?? null,
+    clientRequestId: r.client_request_id ?? null,
     slaHours: r.sla_hours ?? undefined,
     channel: (r.channel ?? undefined) as Channel | undefined,
     createdAt: r.created_at,
+    updatedAt: r.updated_at ?? r.created_at,
   };
 }
 
@@ -1037,34 +1058,197 @@ class D1OpportunityRepository implements OpportunityRepository {
     return res.results.map(mapOpportunity);
   }
 
-  async create(input: CreateOpportunityInput): Promise<Opportunity> {
+  async create(
+    input: CreateOpportunityInput,
+  ): Promise<{ opportunity: Opportunity; created: boolean }> {
+    // Mirror the mock/domain invariants before touching the DB — CHECKs would
+    // also reject, but the error message here is actionable.
+    if (!isValidStatusStagePair(input.status, input.salesStage)) {
+      throw new Error("status/sales_stage pairing violated");
+    }
+    if (input.status === "ACTIVE") {
+      const errors = activationGateErrors({
+        accountId: input.accountId,
+        industryId: input.industryId ?? null,
+        momentEventId: input.momentEventId,
+        projectTypeId: input.projectTypeId ?? null,
+        ownerId: input.ownerId,
+        expectedRevenue: input.expectedRevenue,
+        nextAction: input.nextAction,
+        nextActionDate: input.nextActionDate ?? null,
+      });
+      if (errors.length > 0) {
+        throw new Error(`activation gate failed: ${errors.join(", ")}`);
+      }
+    }
     const id = `OPP-${crypto.randomUUID()}` as OpportunityId;
     const now = new Date().toISOString();
-    await this.db
-      .prepare(
-        `INSERT INTO opportunities (
-           id, organization_id, moment_event_id, account_id, name,
-           expected_revenue, expected_gp, close_date, stage,
-           owner_id, next_action, channel, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        id, ORG, input.momentEventId, input.accountId, input.name,
-        input.expectedRevenue, input.expectedGP, input.closeDate, input.stage,
-        input.ownerId, input.nextAction, input.channel ?? null, now, now,
-      )
-      .run();
-    // Audit log for the commercial write (§38).
-    await this.db
-      .prepare(
-        `INSERT INTO audit_logs (id, organization_id, user_id, entity_type, entity_id, action, after_json, created_at)
-         VALUES (?, ?, ?, 'opportunity', ?, 'create', ?, ?)`,
-      )
-      .bind(`AUD-${crypto.randomUUID()}`, ORG, input.ownerId, id, JSON.stringify(input), now)
-      .run();
+    const requestId = input.clientRequestId ?? null;
+
+    // Atomic batch: opportunity (idempotent via the partial unique index) +
+    // first stage-history row + solution links + audit. INSERT OR IGNORE
+    // makes every statement a no-op on a duplicate clientRequestId, so a
+    // retry cannot double-write any of the four tables.
+    const historyId = requestId ? `PSH:${requestId}` : `PSH-${id}-0`;
+    const statements = [
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO opportunities (
+             id, organization_id, moment_event_id, account_id, name,
+             status, sales_stage, industry_id, sub_industry_id, project_type_id,
+             brief, expected_revenue, expected_gp, close_date, expected_delivery_date,
+             owner_id, next_action, next_action_date, client_request_id,
+             channel, created_by, created_at, updated_at
+           )
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+           WHERE NOT EXISTS (
+             SELECT 1 FROM opportunities
+             WHERE organization_id = ? AND client_request_id = ? AND ? IS NOT NULL
+           )`,
+        )
+        .bind(
+          id, ORG, input.momentEventId, input.accountId, input.name,
+          input.status, input.salesStage, input.industryId ?? null,
+          input.subIndustryId ?? null, input.projectTypeId ?? null,
+          input.brief ?? null, input.expectedRevenue, input.expectedGP,
+          input.closeDate, input.expectedDeliveryDate ?? null,
+          input.ownerId, input.nextAction, input.nextActionDate ?? null,
+          requestId, input.channel ?? null, input.createdBy ?? input.ownerId,
+          now, now,
+          ORG, requestId, requestId,
+        ),
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO project_stage_history (
+             id, organization_id, opportunity_id, from_status, to_status,
+             from_stage, to_stage, reason, changed_by, changed_at, client_request_id
+           )
+           SELECT ?, ?, o.id, NULL, ?, NULL, ?, 'created', ?, ?, ?
+           FROM opportunities o WHERE o.organization_id = ? AND o.id = ?`,
+        )
+        .bind(
+          historyId, ORG, input.status, input.salesStage,
+          input.createdBy ?? input.ownerId, now, requestId, ORG, id,
+        ),
+      ...(input.solutionIds ?? []).map((solutionId) =>
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO opportunity_solutions (opportunity_id, solution_id)
+             SELECT o.id, ? FROM opportunities o
+             WHERE o.organization_id = ? AND o.id = ?`,
+          )
+          .bind(solutionId, ORG, id),
+      ),
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO audit_logs (id, organization_id, user_id, entity_type, entity_id, action, after_json, created_at)
+           SELECT ?, ?, ?, 'opportunity', o.id, 'create', ?, ?
+           FROM opportunities o WHERE o.organization_id = ? AND o.id = ?`,
+        )
+        .bind(
+          requestId ? `AUD-OPP:${requestId}` : `AUD-${crypto.randomUUID()}`,
+          ORG, input.createdBy ?? input.ownerId,
+          JSON.stringify({ ...input, solutionIds: input.solutionIds ?? [] }),
+          now, ORG, id,
+        ),
+    ];
+    await this.db.batch(statements);
+
+    // Survivor read-back: on a duplicate clientRequestId our insert was a
+    // no-op — return the original row.
+    if (requestId) {
+      const survivor = await this.db
+        .prepare(
+          "SELECT * FROM opportunities WHERE organization_id = ? AND client_request_id = ?",
+        )
+        .bind(ORG, requestId)
+        .first<Row>();
+      if (!survivor) throw new Error("Failed to create opportunity");
+      return { opportunity: mapOpportunity(survivor), created: survivor.id === id };
+    }
     const created = await this.getById(id);
     if (!created) throw new Error("Failed to create opportunity");
-    return created;
+    return { opportunity: created, created: true };
+  }
+
+  async listSolutionIds(id: OpportunityId): Promise<SolutionId[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT os.solution_id FROM opportunity_solutions os
+         JOIN opportunities o ON o.id = os.opportunity_id
+         WHERE o.organization_id = ? AND os.opportunity_id = ?`,
+      )
+      .bind(ORG, id)
+      .all<Row>();
+    return res.results.map((r) => r.solution_id as SolutionId);
+  }
+
+  async listStageHistory(id: OpportunityId): Promise<ProjectStageHistoryEntry[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM project_stage_history
+         WHERE organization_id = ? AND opportunity_id = ?
+         ORDER BY changed_at, id`,
+      )
+      .bind(ORG, id)
+      .all<Row>();
+    return res.results.map((r) => ({
+      id: r.id,
+      opportunityId: r.opportunity_id as OpportunityId,
+      fromStatus: (r.from_status as ProjectStatus | null) ?? null,
+      toStatus: r.to_status as ProjectStatus,
+      fromStage: (r.from_stage as SalesStage | null) ?? null,
+      toStage: (r.to_stage as SalesStage | null) ?? null,
+      reason: r.reason ?? null,
+      changedBy: (r.changed_by as UserId | null) ?? null,
+      changedAt: r.changed_at,
+    }));
+  }
+
+  async addProjectContact(input: AddProjectContactInput): Promise<{ added: boolean }> {
+    // Same-organization membership enforced in-statement: the INSERT only
+    // fires when both the opportunity AND the contact live in this org.
+    const id = `PC-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const result = await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO project_contacts (
+           id, organization_id, opportunity_id, contact_id, role, created_at
+         )
+         SELECT ?, ?, o.id, c.id, ?, ?
+         FROM opportunities o, contacts c
+         WHERE o.organization_id = ? AND o.id = ?
+           AND c.organization_id = ? AND c.id = ?`,
+      )
+      .bind(id, ORG, input.role, now, ORG, input.opportunityId, ORG, input.contactId)
+      .run();
+    if ((result.meta.changes ?? 0) > 0) return { added: true };
+    // No row written: either a duplicate (fine) or an org/FK mismatch (error).
+    const existing = await this.db
+      .prepare(
+        `SELECT 1 FROM project_contacts
+         WHERE opportunity_id = ? AND contact_id = ? AND role = ?`,
+      )
+      .bind(input.opportunityId, input.contactId, input.role)
+      .first();
+    if (existing) return { added: false };
+    throw new Error(
+      `Contact ${input.contactId} or opportunity ${input.opportunityId} not in organization`,
+    );
+  }
+
+  async listProjectContacts(id: OpportunityId): Promise<ProjectContactLink[]> {
+    const res = await this.db
+      .prepare(
+        `SELECT contact_id, role FROM project_contacts
+         WHERE organization_id = ? AND opportunity_id = ?`,
+      )
+      .bind(ORG, id)
+      .all<Row>();
+    return res.results.map((r) => ({
+      contactId: r.contact_id as ContactId,
+      role: r.role as ProjectContactRole,
+    }));
   }
 }
 
