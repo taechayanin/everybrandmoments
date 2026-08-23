@@ -141,6 +141,9 @@ export interface CreateOpportunityInput {
 
 export interface OpportunityRepository {
   getById(id: OpportunityId): Promise<Opportunity | null>;
+  /** Bounded, newest-first page — production paths must use this. */
+  list(input: { limit: number; cursor?: string }): Promise<Paginated<Opportunity>>;
+  /** Unbounded — mock/tests and small internal aggregates only. */
   listAll(): Promise<Opportunity[]>;
   create(input: CreateOpportunityInput): Promise<Opportunity>;
 }

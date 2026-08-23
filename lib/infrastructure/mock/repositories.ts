@@ -238,6 +238,11 @@ class MockOpportunityRepository implements OpportunityRepository {
     return opportunities.find((o) => o.id === id) ?? null;
   }
 
+  async list(input: { limit: number; cursor?: string }): Promise<Paginated<Opportunity>> {
+    const sorted = [...opportunities].reverse(); // newest first (insertion order)
+    return paginate(sorted, input.limit, input.cursor);
+  }
+
   async listAll(): Promise<Opportunity[]> {
     return [...opportunities];
   }

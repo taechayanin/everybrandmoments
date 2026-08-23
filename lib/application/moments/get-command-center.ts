@@ -34,12 +34,13 @@ export async function getCommandCenter(): Promise<CommandCenterView> {
   const repos = await getRepositories();
   const today = getClock().now().toISOString().slice(0, 10);
 
-  const [events, opportunities, appointments, accountsPage] = await Promise.all([
+  const [events, opportunitiesPage, appointments, accountsPage] = await Promise.all([
     repos.moments.listAll(),
-    repos.opportunities.listAll(),
+    repos.opportunities.list({ limit: 100 }),
     repos.appointments.listUpcoming(),
     repos.accounts.search({ limit: 1000 }),
   ]);
+  const opportunities = opportunitiesPage.items;
   const accountById = new Map(accountsPage.items.map((a) => [a.id, a]));
   const users = await repos.users.listAll();
   const userName = (id: string) => {

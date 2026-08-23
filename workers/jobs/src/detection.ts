@@ -1,4 +1,5 @@
 import { ACTIVE_MOMENT_STATUSES, type MomentCode } from "../../../lib/domain/moment";
+import { signalOccurrenceKey } from "../../../lib/jobs/occurrence";
 import { detectWithClaude, type AiDetectorEnv } from "./ai-detection";
 import {
   DetectionResultSchema,
@@ -153,55 +154,87 @@ export async function detectMomentFromSignals(
   }
 
   const now = new Date().toISOString();
-  // Occurrence identity: one active moment per (account, moment code).
-  // The unique index on (organization_id, dedupe_key) makes concurrent
-  // deliveries race-safe (review 🔴 §4) — INSERT OR IGNORE, then read back.
-  const dedupeKey = `SIGNAL:${job.organizationId}:${job.accountId}:${result.momentCode}`;
-  const eventId = `ME-${crypto.randomUUID()}`;
+  // TECHNICAL IDEMPOTENCY (review P1): the key is derived from the actual
+  // evidence — sorted signal ids — so a redelivered queue message or a
+  // concurrent worker with the same signal group resolves to the same key,
+  // while a *different* signal group next year is free to open a new moment.
+  const dedupeKey = await signalOccurrenceKey(
+    job.organizationId,
+    job.accountId,
+    result.momentCode,
+    validSignalIds,
+  );
 
-  const statements = [
-    db
-      .prepare(
-        `INSERT OR IGNORE INTO moment_events (
-           id, organization_id, account_id, moment_code, sub_moment,
-           trigger_source, trigger_detail, detected_at, expected_event_date,
-           score_business_fit, score_intent, score_timing, score_wallet, score_relationship,
-           potential_wallet_min, potential_wallet_max,
-           recommended_action, status, next_expected_moment,
-           detection_confidence, detected_by, dedupe_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 15, ?, 10, 5, 5, 0, 0, ?, 'Detected', ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        eventId, job.organizationId, job.accountId, result.momentCode, result.subMoment,
-        "Rule Engine", result.reason, now.slice(0, 10), result.expectedEventDate,
-        Math.round(result.confidence * 20), // intent /25 scales with confidence
-        RULES.find((r) => r.moment === result.momentCode)?.action ?? "Review Moment ใหม่",
-        result.momentCode,
-        result.confidence, `${detectorName}@${detectorVersion}`, dedupeKey, now, now,
-      ),
-  ];
-  await db.batch(statements);
+  let finalEventId: string;
+  let dedupReason: "none" | "idempotent_replay" | "active_moment" = "none";
 
-  // Resolve the surviving event for this occurrence: the row we just inserted,
-  // or (when OR IGNORE hit the unique index) the active event that beat us.
-  const survivor = await db
+  // 1) Same evidence already produced a moment (retry / duplicate delivery).
+  const byKey = await db
     .prepare(
-      `SELECT id FROM moment_events
-       WHERE organization_id = ? AND (
-         dedupe_key = ? OR (
-           account_id = ? AND moment_code = ?
-           AND status IN (${ACTIVE_MOMENT_STATUSES.map(() => "?").join(", ")})
-         )
-       )
-       ORDER BY created_at DESC LIMIT 1`,
+      "SELECT id FROM moment_events WHERE organization_id = ? AND dedupe_key = ?",
     )
-    .bind(
-      job.organizationId, dedupeKey, job.accountId, result.momentCode,
-      ...ACTIVE_MOMENT_STATUSES,
-    )
+    .bind(job.organizationId, dedupeKey)
     .first<{ id: string }>();
-  const finalEventId = survivor?.id ?? eventId;
-  const deduped = finalEventId !== eventId;
+
+  if (byKey) {
+    finalEventId = byKey.id;
+    dedupReason = "idempotent_replay";
+  } else {
+    // 2) BUSINESS DEDUP (application logic, not a DB constraint): while a
+    // moment of this type is still ACTIVE for the account, new evidence
+    // attaches to it instead of opening a parallel moment. Once it closes,
+    // future occurrences create fresh moments.
+    const active = await db
+      .prepare(
+        `SELECT id FROM moment_events
+         WHERE organization_id = ? AND account_id = ? AND moment_code = ?
+           AND status IN (${ACTIVE_MOMENT_STATUSES.map(() => "?").join(", ")})
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .bind(job.organizationId, job.accountId, result.momentCode, ...ACTIVE_MOMENT_STATUSES)
+      .first<{ id: string }>();
+
+    if (active) {
+      finalEventId = active.id;
+      dedupReason = "active_moment";
+    } else {
+      // 3) New occurrence — insert. OR IGNORE + the unique index on
+      // (organization_id, dedupe_key) makes the concurrent-worker race safe;
+      // whichever insert wins, the read-back below returns the survivor.
+      const eventId = `ME-${crypto.randomUUID()}`;
+      await db
+        .prepare(
+          `INSERT OR IGNORE INTO moment_events (
+             id, organization_id, account_id, moment_code, sub_moment,
+             trigger_source, trigger_detail, detected_at, expected_event_date,
+             score_business_fit, score_intent, score_timing, score_wallet, score_relationship,
+             potential_wallet_min, potential_wallet_max,
+             recommended_action, status, next_expected_moment,
+             detection_confidence, detected_by, dedupe_key, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 15, ?, 10, 5, 5, 0, 0, ?, 'Detected', ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          eventId, job.organizationId, job.accountId, result.momentCode, result.subMoment,
+          "Rule Engine", result.reason, now.slice(0, 10), result.expectedEventDate,
+          Math.round(result.confidence * 20), // intent /25 scales with confidence
+          RULES.find((r) => r.moment === result.momentCode)?.action ?? "Review Moment ใหม่",
+          result.momentCode,
+          result.confidence, `${detectorName}@${detectorVersion}`, dedupeKey, now, now,
+        )
+        .run();
+
+      const survivor = await db
+        .prepare(
+          "SELECT id FROM moment_events WHERE organization_id = ? AND dedupe_key = ?",
+        )
+        .bind(job.organizationId, dedupeKey)
+        .first<{ id: string }>();
+      if (!survivor) throw new Error("Moment insert failed: no survivor for dedupe key");
+      finalEventId = survivor.id;
+      if (finalEventId !== eventId) dedupReason = "idempotent_replay";
+    }
+  }
+  const deduped = dedupReason !== "none";
 
   // Attach evidence + persist validated AI solution recommendations + mark
   // signals processed — one atomic batch, all org/account scoped.
@@ -236,6 +269,7 @@ export async function detectMomentFromSignals(
       confidence: result.confidence,
       eventId: finalEventId,
       deduped,
+      dedupReason,
       solutionsAttached: solutionIds.length,
       source: detectorName,
     }),

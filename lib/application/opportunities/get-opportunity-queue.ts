@@ -21,7 +21,8 @@ const CLOSED = new Set(["Won", "Lost"]);
 
 export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
   const repos = await getRepositories();
-  const opportunities = await repos.opportunities.listAll();
+  // Bounded page (review P2): production never loads the full table.
+  const { items: opportunities } = await repos.opportunities.list({ limit: 100 });
 
   // Batch read model (review perf §9).
   const [accounts, events, owners] = await Promise.all([

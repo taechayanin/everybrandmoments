@@ -63,9 +63,9 @@ function inClause(n: number): string {
 }
 
 // D1 bounds bind parameters per statement — keep IN () lists small.
-const D1_SAFE_CHUNK_SIZE = 50;
+const D1_SAFE_IN_CHUNK_SIZE = 50;
 
-function chunked<T>(items: T[], size = D1_SAFE_CHUNK_SIZE): T[][] {
+function chunked<T>(items: T[], size = D1_SAFE_IN_CHUNK_SIZE): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
@@ -190,57 +190,93 @@ function mapOpportunity(r: Row): Opportunity {
 }
 
 // ---------- hydration helpers ----------
+// Every relation load is chunked to D1_SAFE_IN_CHUNK_SIZE (no arbitrary-size
+// IN lists) and grouped into Maps once, so hydration is O(rows + related),
+// not O(rows × related) — pre-deploy review P2.
+
+/** Chunk-safe `SELECT ... WHERE <keyColumn> IN (chunk)` across all ids. */
+async function fetchRelatedChunked(
+  db: D1Database,
+  sql: (placeholders: string) => string,
+  ids: string[],
+): Promise<Row[]> {
+  const out: Row[] = [];
+  for (const chunk of chunked(ids)) {
+    const res = await db
+      .prepare(sql(inClause(chunk.length)))
+      .bind(...chunk)
+      .all<Row>();
+    out.push(...res.results);
+  }
+  return out;
+}
+
+function groupBy(rows: Row[], key: string): Map<string, Row[]> {
+  const map = new Map<string, Row[]>();
+  for (const row of rows) {
+    const k = row[key] as string;
+    const bucket = map.get(k);
+    if (bucket) bucket.push(row);
+    else map.set(k, [row]);
+  }
+  return map;
+}
 
 async function hydrateAccounts(db: D1Database, rows: Row[]): Promise<Account[]> {
   if (rows.length === 0) return [];
-  const ids = rows.map((r) => r.id);
+  const ids = [...new Set(rows.map((r) => r.id as string))];
   const [contacts, whitespace, orders] = await Promise.all([
-    db.prepare(`SELECT * FROM contacts WHERE account_id IN (${inClause(ids.length)})`).bind(...ids).all(),
-    db.prepare(`SELECT * FROM account_whitespace WHERE account_id IN (${inClause(ids.length)})`).bind(...ids).all(),
-    db.prepare(`SELECT * FROM orders_external WHERE account_id IN (${inClause(ids.length)}) ORDER BY order_date`).bind(...ids).all(),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM contacts WHERE account_id IN (${ph})`, ids),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM account_whitespace WHERE account_id IN (${ph})`, ids),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM orders_external WHERE account_id IN (${ph}) ORDER BY order_date`, ids),
   ]);
+  const contactsBy = groupBy(contacts, "account_id");
+  const whitespaceBy = groupBy(whitespace, "account_id");
+  const ordersBy = groupBy(orders, "account_id");
   return rows.map((r) =>
     mapAccount(
       r,
-      contacts.results.filter((c: Row) => c.account_id === r.id),
-      whitespace.results.filter((w: Row) => w.account_id === r.id),
-      orders.results.filter((o: Row) => o.account_id === r.id),
+      contactsBy.get(r.id) ?? [],
+      whitespaceBy.get(r.id) ?? [],
+      ordersBy.get(r.id) ?? [],
     ),
   );
 }
 
 async function hydrateEvents(db: D1Database, rows: Row[]): Promise<MomentEvent[]> {
   if (rows.length === 0) return [];
-  const ids = rows.map((r) => r.id);
+  const ids = [...new Set(rows.map((r) => r.id as string))];
   const [stakeholders, solutions] = await Promise.all([
-    db.prepare(`SELECT * FROM moment_event_stakeholders WHERE moment_event_id IN (${inClause(ids.length)})`).bind(...ids).all(),
-    db.prepare(`SELECT * FROM moment_event_solutions WHERE moment_event_id IN (${inClause(ids.length)})`).bind(...ids).all(),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM moment_event_stakeholders WHERE moment_event_id IN (${ph})`, ids),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM moment_event_solutions WHERE moment_event_id IN (${ph})`, ids),
   ]);
+  const stakeholdersBy = groupBy(stakeholders, "moment_event_id");
+  const solutionsBy = groupBy(solutions, "moment_event_id");
   return rows.map((r) =>
-    mapEvent(
-      r,
-      stakeholders.results.filter((s: Row) => s.moment_event_id === r.id),
-      solutions.results.filter((s: Row) => s.moment_event_id === r.id),
-    ),
+    mapEvent(r, stakeholdersBy.get(r.id) ?? [], solutionsBy.get(r.id) ?? []),
   );
 }
 
 async function hydrateSolutions(db: D1Database, rows: Row[]): Promise<Solution[]> {
   if (rows.length === 0) return [];
-  const ids = rows.map((r) => r.id);
+  const ids = [...new Set(rows.map((r) => r.id as string))];
   const [stakeholders, industries, packages, crossSell] = await Promise.all([
-    db.prepare(`SELECT * FROM solution_stakeholders WHERE solution_id IN (${inClause(ids.length)})`).bind(...ids).all(),
-    db.prepare(`SELECT * FROM solution_industries WHERE solution_id IN (${inClause(ids.length)})`).bind(...ids).all(),
-    db.prepare(`SELECT * FROM solution_packages WHERE solution_id IN (${inClause(ids.length)})`).bind(...ids).all(),
-    db.prepare(`SELECT * FROM solution_relations WHERE relation_type = 'CROSS_SELL' AND source_solution_id IN (${inClause(ids.length)})`).bind(...ids).all(),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM solution_stakeholders WHERE solution_id IN (${ph})`, ids),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM solution_industries WHERE solution_id IN (${ph})`, ids),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM solution_packages WHERE solution_id IN (${ph})`, ids),
+    fetchRelatedChunked(db, (ph) => `SELECT * FROM solution_relations WHERE relation_type = 'CROSS_SELL' AND source_solution_id IN (${ph})`, ids),
   ]);
+  const stakeholdersBy = groupBy(stakeholders, "solution_id");
+  const industriesBy = groupBy(industries, "solution_id");
+  const packagesBy = groupBy(packages, "solution_id");
+  const crossSellBy = groupBy(crossSell, "source_solution_id");
   return rows.map((r) =>
     mapSolution(
       r,
-      stakeholders.results.filter((s: Row) => s.solution_id === r.id),
-      industries.results.filter((i: Row) => i.solution_id === r.id),
-      packages.results.filter((p: Row) => p.solution_id === r.id),
-      crossSell.results.filter((c: Row) => c.source_solution_id === r.id),
+      stakeholdersBy.get(r.id) ?? [],
+      industriesBy.get(r.id) ?? [],
+      packagesBy.get(r.id) ?? [],
+      crossSellBy.get(r.id) ?? [],
     ),
   );
 }
@@ -478,6 +514,16 @@ class D1MomentRepository implements MomentRepository {
     action: "confirm" | "reject",
     reason?: string,
   ): Promise<boolean> {
+    // Fast path: already decided → no-op with no audit write at all. The
+    // guarded UPDATE below still protects against the SELECT/UPDATE race.
+    const existing = await this.db
+      .prepare(
+        "SELECT verified_at FROM moment_events WHERE organization_id = ? AND id = ?",
+      )
+      .bind(ORG, id)
+      .first<{ verified_at: string | null }>();
+    if (!existing || existing.verified_at !== null) return false;
+
     const now = new Date().toISOString();
     const statusSql =
       action === "confirm"
@@ -712,6 +758,21 @@ class D1OpportunityRepository implements OpportunityRepository {
       .bind(ORG, id)
       .first<Row>();
     return row ? mapOpportunity(row) : null;
+  }
+
+  async list(input: { limit: number; cursor?: string }): Promise<Paginated<Opportunity>> {
+    const offset = input.cursor ? Number.parseInt(input.cursor, 10) || 0 : 0;
+    const res = await this.db
+      .prepare(
+        "SELECT * FROM opportunities WHERE organization_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+      )
+      .bind(ORG, input.limit + 1, offset)
+      .all<Row>();
+    const hasMore = res.results.length > input.limit;
+    return {
+      items: res.results.slice(0, input.limit).map(mapOpportunity),
+      nextCursor: hasMore ? String(offset + input.limit) : undefined,
+    };
   }
 
   async listAll(): Promise<Opportunity[]> {
