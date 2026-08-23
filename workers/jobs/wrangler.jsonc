@@ -31,6 +31,13 @@
         "max_batch_timeout": 5,
         "max_retries": 3,
         "dead_letter_queue": "everybrandmoments-jobs-dlq"
+      },
+      {
+        // Dead-letter consumer: marks orphaned signals `failed` (src/index.ts).
+        "queue": "everybrandmoments-jobs-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 0
       }
     ]
   },

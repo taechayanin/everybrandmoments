@@ -16,10 +16,19 @@ export interface JobsEnv {
 const CRON_ANNIVERSARY = "0 23 * * *"; // 06:00 ICT
 const CRON_RETURN_180 = "0 0 * * *"; // 07:00 ICT
 
+const DLQ_NAME = "everybrandmoments-jobs-dlq";
+
 export default {
   // Queue consumer: UI/API enqueues → this worker processes → D1 → Radar.
   // Long-running work never blocks a page request (refactor plan §2.4).
   async queue(batch: MessageBatch<unknown>, env: JobsEnv): Promise<void> {
+    // Dead letters land here after max_retries: mark their signals `failed`
+    // so they stop showing as in-flight and reconciliation never resurrects
+    // them silently (pre-deploy known issue).
+    if (batch.queue === DLQ_NAME) {
+      await handleDeadLetters(batch, env);
+      return;
+    }
     for (const message of batch.messages) {
       const parsed = JobSchema.safeParse(message.body);
       if (!parsed.success) {
@@ -64,6 +73,39 @@ export default {
     await reconcilePendingSignals(env);
   },
 } satisfies ExportedHandler<JobsEnv>;
+
+async function handleDeadLetters(
+  batch: MessageBatch<unknown>,
+  env: JobsEnv,
+): Promise<void> {
+  for (const message of batch.messages) {
+    const parsed = JobSchema.safeParse(message.body);
+    if (parsed.success && parsed.data.jobType === "DETECT_MOMENT") {
+      const job = parsed.data;
+      // Guard `!= 'processed'` — a redelivered copy of an already-completed
+      // job must not flip its signals back to failed.
+      await env.DB.prepare(
+        `UPDATE moment_signals SET processing_status = 'failed'
+         WHERE organization_id = ? AND account_id = ?
+           AND id IN (${job.signalIds.map(() => "?").join(", ")})
+           AND processing_status != 'processed'`,
+      )
+        .bind(job.organizationId, job.accountId, ...job.signalIds)
+        .run();
+    }
+    console.error(
+      JSON.stringify({
+        event: "job_dead_lettered",
+        jobType: parsed.success ? parsed.data.jobType : "invalid",
+        accountId:
+          parsed.success && parsed.data.jobType === "DETECT_MOMENT"
+            ? parsed.data.accountId
+            : undefined,
+      }),
+    );
+    message.ack(); // dead letters are terminal — never retry from the DLQ
+  }
+}
 
 const RECONCILE_AFTER_MS = 15 * 60 * 1000;
 
