@@ -3,9 +3,11 @@
 
 Spec: [`docs/Moment_OS_CRM_Activity_Layer_Sprint.md`](docs/Moment_OS_CRM_Activity_Layer_Sprint.md)
 Workflow: [`docs/Moment_OS_Claude_Code_Development_Workflow.md`](docs/Moment_OS_Claude_Code_Development_Workflow.md)
-Status: **AWAITING PLAN REVIEW (rev 2 — addresses PLAN REVIEW round 1) — no CRM code written**
+Status: **AWAITING PLAN REVIEW (rev 3 — addresses PLAN REVIEW round 2) — no CRM code written**
 
 Rev 2 changes: docs paths fixed (§refs above), Figma section added, Account 360 path corrected to `app/accounts/[id]`, Activity+Task transaction boundary redesigned as `InteractionWriteRepository`, contacts migration now a deterministic table rebuild with `role`→`job_title` normalization, task statuses migrated to one canonical uppercase set, AI suggestion acceptance idempotency defined, reviewer decisions on all Open Questions incorporated.
+
+Rev 3 changes (review round 2): contacts organization_id derived from owning account via JOIN (no hardcoded ORG-001, fail-loud on orphans), tasks table rebuilt with full FK set + fail-loud status normalization (no silent OPEN fallback), DB CHECK constraints added for all new CRM enums/ranges, Step-6 AI acceptance clarified as ONE atomic write abstraction (guard + moment + task + audit in a single batch, never a separately-committed guard).
 
 ---
 
@@ -95,32 +97,96 @@ export interface InteractionWriteRepository {
 - `activity_type TEXT` ตรวจด้วย zod enum `ActivityType` (spec §10) — ไม่ free-form
 - FK: organization/account/contact/opportunity/moment_event; ทุก query scope `organization_id`
 
-### `contacts` — deterministic rebuild (rev 2 — review item 5)
+### `contacts` — deterministic rebuild (rev 2 item 5 + rev 3 item 1)
 Rebuild ทั้ง table ตอนนี้ (ก่อนมี CRM data จริง) แทน ADD COLUMN ทีละอัน:
-1. `CREATE TABLE contacts_new` — schema สะอาด: `id, organization_id TEXT NOT NULL REFERENCES organizations(id), account_id TEXT NOT NULL REFERENCES accounts(id), name NOT NULL, job_title, department, email, phone, line_id, buying_role, influence_level, is_primary INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ACTIVE', notes, created_at NOT NULL, updated_at NOT NULL`
-2. Copy + normalize: `INSERT INTO contacts_new SELECT id, 'ORG-001', account_id, name, role /* legacy role = job title */, NULL, email, phone, NULL, NULL /* buying_role unknown → NULL, ทีมกรอกใน UI */, is_primary, 'ACTIVE', NULL, created_at, created_at FROM contacts`
+1. `CREATE TABLE contacts_new` — schema สะอาด: `id, organization_id TEXT NOT NULL REFERENCES organizations(id), account_id TEXT NOT NULL REFERENCES accounts(id), name NOT NULL, job_title, department, email, phone, line_id, buying_role, influence_level, is_primary INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'ACTIVE', notes, created_at NOT NULL, updated_at NOT NULL` + CHECK constraints (ดู DB Constraints)
+2. Copy + normalize — **tenant-safe: derive org จาก account เจ้าของ ไม่ hardcode**:
+   ```sql
+   INSERT INTO contacts_new (id, organization_id, account_id, name, job_title, email, phone, is_primary, status, created_at, updated_at)
+   SELECT c.id, a.organization_id, c.account_id, c.name,
+          c.role,               -- legacy role = job title
+          c.email, c.phone, c.is_primary, 'ACTIVE', c.created_at, c.created_at
+   FROM contacts c
+   LEFT JOIN accounts a ON a.id = c.account_id;
+   ```
+   ใช้ **LEFT JOIN โดยตั้งใจ**: contact กำพร้า (ไม่มี account) จะได้ `organization_id = NULL` → ชน `NOT NULL` → **migration fail ดัง ๆ** แทนที่ INNER JOIN จะเงียบ ๆ ทิ้งแถว; `buying_role`/`department`/`line_id`/`notes` เริ่ม NULL (legacy `role` ไม่เคยเก็บ buying role — ไม่เดา DECISION_MAKER)
 3. `DROP TABLE contacts; ALTER TABLE contacts_new RENAME TO contacts;`
 4. `CREATE INDEX idx_contacts_org_account ON contacts(organization_id, account_id);`
-5. รันใน migration เดียว (D1 รัน migration file เป็น batch อยู่แล้ว); seed generator อัปเดตให้ยิง schema ใหม่ + ตัวอย่าง buying_role
-- `buying_role` เป็นคอลัมน์แยกจาก `job_title` เสมอ — legacy `role` ไม่เคยเก็บ buying role จึง normalize เป็น job_title เท่านั้น ไม่เดา DECISION_MAKER
+5. รันใน migration เดียว; seed generator อัปเดตให้ยิง schema ใหม่ + ตัวอย่าง buying_role; pre-migration check ใน local test: `SELECT COUNT(*) FROM contacts c LEFT JOIN accounts a ON a.id=c.account_id WHERE a.id IS NULL` ต้องเป็น 0 ก่อน apply remote
 
-### `tasks` (ALTER + data migration — rev 2 — review item 6)
-- ADD COLUMN: `contact_id`, `description`, `priority TEXT NOT NULL DEFAULT 'NORMAL'`, `created_by`, `completed_at`, `updated_at`
-- **Canonical status ชุดเดียวทุกชั้น**: `UPDATE tasks SET status = CASE lower(status) WHEN 'open' THEN 'OPEN' WHEN 'in_progress' THEN 'IN_PROGRESS' WHEN 'done' THEN 'DONE' WHEN 'cancelled' THEN 'CANCELLED' ELSE 'OPEN' END;`
-- DB/domain/zod/UI ใช้ `OPEN | IN_PROGRESS | DONE | CANCELLED` ตรงกันหมด — ไม่มี mapping layer
-- `CREATE INDEX idx_tasks_org_assignee_due ON tasks(organization_id, assignee_id, due_date);`
+### `tasks` — rebuild with full FK set (rev 3 item 2; แทนแผน ALTER เดิม)
+Legacy `tasks` มี relationship id ครบแต่มี FK แค่ organization_id → rebuild เป็น `tasks_new` ให้ relationally safe ตั้งแต่ก่อนมี CRM data จริง:
+1. `CREATE TABLE tasks_new`:
+   ```sql
+   CREATE TABLE tasks_new (
+     id TEXT PRIMARY KEY,
+     organization_id TEXT NOT NULL REFERENCES organizations(id),
+     account_id TEXT REFERENCES accounts(id),
+     contact_id TEXT REFERENCES contacts(id),
+     moment_event_id TEXT REFERENCES moment_events(id),
+     opportunity_id TEXT REFERENCES opportunities(id),
+     title TEXT NOT NULL,
+     description TEXT,
+     due_date TEXT,
+     assignee_id TEXT REFERENCES users(id),
+     created_by TEXT REFERENCES users(id),
+     priority TEXT NOT NULL DEFAULT 'NORMAL' CHECK (priority IN ('LOW','NORMAL','HIGH','URGENT')),
+     status TEXT NOT NULL CHECK (status IN ('OPEN','IN_PROGRESS','DONE','CANCELLED')),
+     completed_at TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   ```
+2. Copy + normalize status แบบ **fail-loud — ไม่ map ค่าที่ไม่รู้จักเป็น OPEN เงียบ ๆ**:
+   ```sql
+   INSERT INTO tasks_new (id, organization_id, account_id, moment_event_id, opportunity_id,
+                          title, due_date, assignee_id, priority, status, created_at, updated_at)
+   SELECT id, organization_id, account_id, moment_event_id, opportunity_id,
+          title, due_date, assignee_id, 'NORMAL',
+          CASE lower(status)
+            WHEN 'open' THEN 'OPEN'
+            WHEN 'in_progress' THEN 'IN_PROGRESS'
+            WHEN 'done' THEN 'DONE'
+            WHEN 'cancelled' THEN 'CANCELLED'
+            ELSE NULL              -- unknown legacy status → NULL → NOT NULL+CHECK ทำให้ migration FAIL
+          END,
+          created_at, created_at
+   FROM tasks;
+   ```
+3. `DROP TABLE tasks; ALTER TABLE tasks_new RENAME TO tasks;`
+4. `CREATE INDEX idx_tasks_org_assignee_due ON tasks(organization_id, assignee_id, due_date);`
+5. Pre-migration detection (local test + before remote apply): `SELECT DISTINCT status FROM tasks WHERE lower(status) NOT IN ('open','in_progress','done','cancelled')` ต้องคืน 0 แถว — ถ้าพบ ให้รายงาน reviewer ตัดสิน mapping ก่อน ไม่แก้เอง
+- ลำดับใน 0004: rebuild contacts **ก่อน** rebuild tasks (tasks_new FK อ้าง contacts ตัวใหม่)
+- DB/domain/zod/UI ใช้ `OPEN | IN_PROGRESS | DONE | CANCELLED` ชุดเดียวกันหมด — ไม่มี mapping layer
 
 ### `activity_ai_suggestions` (ใหม่)
-`id, organization_id NOT NULL, activity_id NOT NULL REFERENCES activities(id), payload_json (validated ActivityAnalysis), confidence, status TEXT NOT NULL DEFAULT 'PENDING' /* PENDING|ACCEPTED|IGNORED */, created_at, decided_at, decided_by` + index `(organization_id, activity_id)` — รองรับ AI KPI (spec §50)
+`id, organization_id NOT NULL REFERENCES organizations(id), activity_id NOT NULL REFERENCES activities(id), payload_json (validated ActivityAnalysis), confidence REAL, status TEXT NOT NULL DEFAULT 'PENDING', created_at, decided_at, decided_by REFERENCES users(id)` + CHECK constraints (ดูข้างล่าง) + index `(organization_id, activity_id)` — รองรับ AI KPI (spec §50)
+
+### DB CHECK Constraints (rev 3 — review item 3)
+Zod ยังเป็น application boundary เหมือนเดิม แต่ DB ต้อง enforce เองด้วย — migration 0004 ใส่ CHECK ตั้งแต่ CREATE TABLE:
+- `activities.activity_type` — `CHECK (activity_type IN ('NOTE','CALL','MEETING','EMAIL','LINE','VISIT','TASK','TASK_COMPLETED','MOMENT_DETECTED','MOMENT_VERIFIED','MOMENT_REJECTED','OPPORTUNITY_CREATED','OPPORTUNITY_STAGE_CHANGED','OPPORTUNITY_WON','OPPORTUNITY_LOST','SYSTEM'))` (spec §10 ครบชุด)
+- `tasks.status` — `CHECK (status IN ('OPEN','IN_PROGRESS','DONE','CANCELLED'))`
+- `tasks.priority` — `CHECK (priority IN ('LOW','NORMAL','HIGH','URGENT'))`
+- `contacts.status` — `CHECK (status IN ('ACTIVE','INACTIVE'))`
+- `contacts.buying_role` — `CHECK (buying_role IS NULL OR buying_role IN ('DECISION_MAKER','INFLUENCER','CHAMPION','PROCUREMENT','USER','FINANCE','GATEKEEPER','OTHER'))` (spec §16)
+- `contacts.influence_level` — `CHECK (influence_level IS NULL OR influence_level IN ('HIGH','MEDIUM','LOW'))`
+- `activity_ai_suggestions.status` — `CHECK (status IN ('PENDING','ACCEPTED','IGNORED'))`
+- `activity_ai_suggestions.confidence` — `CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))`
+zod enum ทุกตัว derive จาก const array เดียวใน `lib/domain/activity.ts` แล้ว generator ของ migration อ้างชุดเดียวกัน (เขียนมือแต่มี test เทียบว่า CHECK list == domain enum เพื่อกัน drift)
 
 ## Migration Plan
 
 `migrations/0004_crm_activity_layer.sql` — forward only, ลำดับใน file เดียว:
-1. CREATE `activities` + indexes (spec §40): `(organization_id, account_id, occurred_at DESC)`, `(organization_id, created_by, occurred_at DESC)`, partial unique client_request_id
-2. Contacts rebuild (ตามขั้นตอน 5 ข้อข้างบน)
-3. Tasks ALTER + status data migration + index
-4. CREATE `activity_ai_suggestions` + index
+1. CREATE `activities` (พร้อม CHECK activity_type) + indexes (spec §40): `(organization_id, account_id, occurred_at DESC)`, `(organization_id, created_by, occurred_at DESC)`, partial unique client_request_id
+2. Contacts rebuild (LEFT JOIN org derivation, fail-loud — ตามขั้นตอน 5 ข้อข้างบน)
+3. Tasks rebuild (full FK set + fail-loud status normalization — ตามขั้นตอนข้างบน; ต้องอยู่หลัง contacts rebuild เพราะ FK อ้าง contacts ใหม่)
+4. CREATE `activity_ai_suggestions` (พร้อม CHECK status/confidence) + index
 5. Seed generator: activities ตัวอย่าง, contacts schema ใหม่ (มี buying_role ตัวอย่าง), tasks status uppercase, CLEAR_ORDER เพิ่ม activity_ai_suggestions → activities ก่อน contacts/accounts
+
+Pre-remote-apply checks (fail → หยุดรายงาน ไม่แก้เอง):
+- orphan contacts: `SELECT COUNT(*) FROM contacts c LEFT JOIN accounts a ON a.id=c.account_id WHERE a.id IS NULL` = 0
+- unknown task status: `SELECT DISTINCT status FROM tasks WHERE lower(status) NOT IN ('open','in_progress','done','cancelled')` = 0 แถว
+(ใน migration เอง กลไก LEFT JOIN→NOT NULL และ CASE ELSE NULL→CHECK ทำให้ apply ล้มเหลวดัง ๆ อยู่ดีถ้าข้อมูลหลุด check)
 
 Migration ต้องผ่าน review ก่อน apply remote (Workflow Rule 6) — จะ apply local เพื่อทดสอบเท่านั้นใน Step 1
 
@@ -130,7 +196,8 @@ Migration ต้องผ่าน review ก่อน apply remote (Workflow Ru
 - `ActivityRepository`: create (single row), getById, listByAccount (keyset บน `occurred_at DESC, id DESC`, page 20), listRecentByAccounts (chunked IN() ≤50), update, softDelete — **ไม่แตะ tasks**
 - `TaskRepository`: create, update, complete, listByAssignee({overdue|today|upcoming}), listByAccount, listByOpportunity
 - `ContactRepository`: listByAccount, getById, getByIds, create, update
-- `SuggestionRepository`: create, getById, listPendingByAccount, `accept(id, userId)` / `ignore(id, userId)` — guarded UPDATE (ดู AI acceptance idempotency)
+- `SuggestionRepository`: create, getById, listPendingByAccount (reads + create เท่านั้น)
+- `SuggestionDecisionWriteRepository`: `acceptAtomic` / `ignoreAtomic` — unit-of-work ของการตัดสินใจทั้งก้อน (ดู AI suggestion acceptance; Step 6)
 - `InteractionWriteRepository`: `logInteraction` unit-of-work (ดู Proposed Architecture)
 - `OpportunityRepository`: เพิ่ม `lastActivityByOpportunity` aggregate read model (`days_since_last_activity` — spec §27) — one grouped query, ไม่ N+1
 
@@ -141,16 +208,34 @@ Migration ต้องผ่าน review ก่อน apply remote (Workflow Ru
 `lib/application/tasks/`: create-follow-up, complete-task, get-my-work-today
 `lib/application/ai/`: analyze-activity (consumer side), accept-suggestion, ignore-suggestion
 
-### AI suggestion acceptance idempotency (rev 2 — review item 8)
+### AI suggestion acceptance — ONE atomic transaction (rev 2 item 8 + rev 3 item 4)
 
-`accept-suggestion` use case (synchronous, ไม่ผ่าน queue — reviewer decision):
-1. `SuggestionRepository.accept(id, userId)` = guarded UPDATE `SET status='ACCEPTED', decided_at=?, decided_by=? WHERE organization_id=? AND id=? AND status='PENDING'` → คืน `changed: boolean` (pattern เดียวกับ moment confirm/reject ที่มีอยู่)
-2. ถ้า `changed === false` → คืนผลเดิม (moment/task ที่เคยสร้างจากการ accept ครั้งแรก) — **double-click/retry เป็น no-op** ไม่สร้างซ้ำ
-3. ถ้า `changed === true` → สร้างผลลัพธ์ผ่าน domain rules เดิม:
-   - Moment: ผ่าน use case สร้าง moment ที่ reuse `signalOccurrenceKey`-style dedupe — key = `SUGGESTION:{org}:{account}:{momentCode}:{suggestionId}` ลง `dedupe_key` unique index เดิมของ `moment_events` → แม้ race ระหว่าง 2 requests ที่ผ่าน guard พร้อมกันไม่ได้ (guard กันแล้ว) DB ยังกันซ้ำอีกชั้น
-   - Task จาก nextAction: ผูก `client_request_id = "SUG:" + suggestionId` → unique index ของ activities/tasks batch กันซ้ำ
-4. ทุก write ใน `db.batch()` เดียว (guarded UPDATE + moment INSERT + audit) — ถ้า batch fail ทั้งก้อน rollback, suggestion ยัง PENDING
-- Moment code validation: ตรวจกับ `MasterMomentRepository.listAll()` (active catalog, มี cache 60s อยู่แล้ว) — **ไม่ใช้ hardcoded list** (reviewer decision)
+`accept-suggestion` use case (synchronous, ไม่ผ่าน queue — reviewer decision). **การ accept ทั้งหมดเป็น write abstraction เดียว** — ไม่มี guarded UPDATE ที่ commit แยกก่อน dependent writes:
+
+```ts
+// lib/repositories — atomic decision unit-of-work (Step 6)
+export interface SuggestionDecisionWriteRepository {
+  /**
+   * ONE db.batch() (atomic in D1):
+   *   [ guarded UPDATE suggestion SET ACCEPTED WHERE status='PENDING',
+   *     INSERT OR IGNORE moment (dedupe_key = SUGGESTION:{org}:{acc}:{code}:{suggestionId}),
+   *     INSERT OR IGNORE follow-up task (client_request_id = SUG:{suggestionId}),
+   *     INSERT audit ]
+   * All-or-nothing: batch fail => ทุก statement rollback, suggestion ยัง PENDING.
+   */
+  acceptAtomic(input: AcceptSuggestionInput): Promise<AcceptOutcome>;
+  ignoreAtomic(id: SuggestionId, userId: UserId): Promise<{ changed: boolean }>;
+}
+```
+
+Flow ของ use case:
+1. อ่าน suggestion + validate momentCode กับ active Master Moment catalog ผ่าน repository (**ไม่ hardcode list** — reviewer decision) และ validate solutionIds กับ catalog
+2. เรียก `acceptAtomic` — batch เดียวตามคอมเมนต์ข้างบน
+3. อ่านผลหลัง batch: ถ้า guarded UPDATE เปลี่ยน 0 แถว (ถูก accept/ignore ไปแล้ว) → dependent INSERTs ถูก `OR IGNORE` โดย unique keys อยู่แล้ว → คืนผลลัพธ์เดิมจากการ accept ครั้งแรก (**double-click/retry = no-op**)
+4. Idempotency สองชั้นเสมอ: (a) guard `status='PENDING'` (b) unique keys ระดับแถว — `moment_events.dedupe_key` (unique index เดิม) และ `client_request_id` unique — ต่อให้ race ผ่าน guard ได้ DB ก็กันซ้ำ
+
+หมายเหตุ D1: `db.batch()` เป็น implicit transaction (all-or-nothing) แต่ statement หลัง guard ไม่รู้ผลของ guard — ความถูกต้องจึงอิง unique keys ตามข้อ 4 ไม่ใช่ control flow; นี่คือเหตุที่ทุก dependent INSERT ต้องเป็น `INSERT OR IGNORE` + key ที่ derive จาก suggestionId เท่านั้น (ไม่มี random id ใน key path)
+**Plan clarification เท่านั้น — ยังไม่ implement Step 6**
 
 ## UI / UX Changes
 
