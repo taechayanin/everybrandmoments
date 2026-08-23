@@ -76,8 +76,14 @@ export interface InteractionWriteRepository {
 
 ## Figma Review / Figma → Implementation Mapping (rev 2 — review item 2)
 
-**สถานะ: ยังไม่มี Figma file ใน repo หรือใน brief ใด ๆ ที่ผ่านมา** — สอง sprint docs ไม่มีลิงก์ Figma; แหล่ง layout เดียวที่มีคือ ASCII wireframe ใน spec §7 + rules §6.
-→ **Action ก่อน Step 4 (UI): ทีมต้องส่ง Figma URL + page/node id** แล้วผมจะเติมตารางนี้ให้ครบก่อนเริ่ม UI step. จนกว่าจะได้ลิงก์ ให้ถือ spec §6–7 เป็น layout authority.
+**สถานะ (อัปเดต 2026-08-23): ได้รับ design reference แล้ว** — ไฟล์ `พี่เอกปรับฟีเจอร์ให้เหลือ 19 md.pdf` (Figma board export, 72MB — ใหญ่เกิน commit ลง repo; เก็บที่ Downloads ของทีม, ควรแนบ Figma URL จริงเพิ่มเมื่อมี) สไตล์ Pipedrive-like ครอบคลุม:
+- **แดชบอร์ด**: มูลค่า pipeline / ปิดได้ไตรมาสนี้ / อัตราชนะ / ดีลเสี่ยงตกหล่น, pipeline ตาม stage, อันดับนักขาย, กิจกรรมทีมขาย (เป้า/วัน), ดีลที่ต้องติดตาม (หยุดนิ่ง N วัน), แผน Visit สัปดาห์, Campaign
+- **Deal stages**: `Lead → Pre-Qualified → Qualified (30%) → Proposal Made (50%) → Sample and Design → Negotiations and Payment (80%) → SO & Production → Finish Project`
+- **ลีด (Lead)**: ตารางแก้หลายรายการพร้อมกัน, ป้ายกำกับ HOT/WARM/COLD/EVENT, ช่องทาง/แหล่งที่มา (API/Google Form/สร้างเอง), แปลงเป็นดีล, ไม่ได้ติดต่อ N วัน
+- **สร้างดีล/โปรเจกต์ form**: วันที่, มูลค่า, Project Type, Closing Probability %, ผู้ติดต่อ, กำหนดส่งสินค้า, Company, ดีล (โชว์ 5–10 ดีลล่าสุด)
+- **อื่น ๆ**: ทะเบียนลูกค้า, งานที่ต้องทำ, Visit Plan, ฟีดกิจกรรม, Company Code, จัดการผู้ใช้งาน, ERP
+
+⚠️ **Scope-alignment ต้องให้ reviewer ตัดสินก่อนเริ่ม Step 4** (ดู Open Questions): design นี้กว้างกว่า CRM Activity Layer sprint ที่อนุมัติ (เพิ่ม Leads module, dashboard ใหม่ทั้งหน้า, deal-stage taxonomy ใหม่ที่ต่างจาก `OpportunityStage` ปัจจุบัน) — Step 4 ตามแผนเดิมคือ Account 360; ผมจะไม่ขยาย scope เอง (Workflow Rule 5/6)
 
 | Area | Figma ref | Current implementation | Target | Mobile behavior | Intentional deviation |
 |---|---|---|---|---|---|
@@ -345,7 +351,11 @@ createNoteAction, logCallAction, logMeetingAction, createTaskAction, completeTas
 
 ## Open Questions
 
-1. Figma URL/page/node — รอทีมส่งลิงก์ (บล็อกเฉพาะ Step 4)
+1. ~~Figma URL/page/node~~ → ได้ design PDF แล้ว (ดู Figma section); ยังอยากได้ Figma URL จริงเพื่อดู node ละเอียด
+2. **Scope alignment สำหรับ Step 4** — design ใหม่มี Leads module + dashboard ใหม่ + deal stages 8 ขั้นที่ต่างจาก `OpportunityStage` ปัจจุบัน ตัวเลือก:
+   - (a) Step 4 ทำ Account 360 + Activity Composer ตามแผนเดิม โดยยึดภาษา visual/component จาก design PDF (ตาราง, ป้ายกำกับ, layout) — Leads/Dashboard/stage ใหม่แยกเป็น sprint ถัดไป
+   - (b) revise แผนใหม่ให้ครอบ design ทั้งหมด (ต้องทำ IMPLEMENTATION_PLAN รอบใหม่ + review)
+   แนะนำ (a) — CRM Activity Layer จบก่อนแล้วค่อยต่อยอด
 
 ---
 

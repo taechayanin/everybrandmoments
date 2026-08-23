@@ -6,8 +6,19 @@ Step 3 — CRM Activity Layer: Application Use Cases + Server Actions
 ## Goal
 Business rules ทั้งหมดของ CRM interaction อยู่ที่ application layer ตาม IMPLEMENTATION_PLAN.md (rev 4) + reviewer requirements 9 ข้อ — **ยังไม่มี UI (Step 4), ไม่มี AI (Step 6), ไม่ deploy**
 
-## Commit
-`1dfc537`
+## Commits
+- `1dfc537` feat(crm): interaction use cases and server actions (Step 3)
+- `1af3661` fix(crm): step 3 review round-1 fixes (P1 x4)
+
+
+## P1 Fixes (review round 1)
+1. **Priority default → application boundary**: `DEFAULT_TASK_PRIORITY` ใน domain; `CreateCrmTaskInput.priority` เป็น required — adapters (mock+D1) persist ค่า canonical ตรง ๆ ไม่ตัดสินใจเอง
+2. **FOLLOW_UP ต้องมีทั้ง nextAction และ nextActionAt**: validate ที่ `validateNextState` + `buildFollowUpTask` (dueDate จึง guaranteed) — เทสต์ครอบทั้ง nextState และปุ่ม Save+Follow-up
+3. **Org timezone**: `lib/services/org-time.ts` (`ORG_TIMEZONE=Asia/Bangkok`, `orgLocalDate(instant, tz?)` — tz พร้อมย้ายไป org record ใน Sprint 7); getMyWorkToday ใช้วัน local; เทสต์ boundary 16:59Z/17:00Z/20:30Z ที่วัน Bangkok ≠ วัน UTC
+4. **Audit update/delete atomic**: D1 ยิง batch เดียว [mutation, audit INSERT..SELECT WHERE EXISTS] — `ACTIVITY_UPDATED` มี before/after ของ field ที่แก้, `ACTIVITY_DELETED` guard ด้วย timestamp เท่ากัน → retry ไม่ mutate และไม่ audit ซ้ำ; actor/entity/timestamp ครบ; mock mirror + เทสต์ (update 1 audit, delete ซ้ำ audit เดียว); system activities ยัง immutable
+
+## Design Reference Received
+ทีมส่ง `พี่เอกปรับฟีเจอร์ให้เหลือ 19 md.pdf` (Pipedrive-style, 72MB — ไม่ commit ลง repo) — สรุปเข้า Figma section ของ IMPLEMENTATION_PLAN.md แล้ว พร้อม **Open Question ใหม่เรื่อง scope alignment** (design มี Leads/dashboard/deal stages 8 ขั้น เกิน sprint ที่อนุมัติ) — เสนอทางเลือก (a) Step 4 = Account 360 ตามแผน + visual language จาก design / (b) revise แผน — รอ reviewer ตัดสิน
 
 ## Files Changed
 - `lib/application/activities/shared.ts` (ใหม่) — `CrmError`, `assertInteractionOwnership` (cross-entity same-account), `validateNextState`, `buildFollowUpTask`
@@ -47,7 +58,7 @@ Interaction ทั้งก้อน idempotent บน `clientRequestId`: retry 
 - ไม่มี N+1 ใหม่; ไม่แตะ query เดิมของหน้าอื่น
 
 ## TESTS
-79/79 passing (10 files) — Step 3 เพิ่ม 13: note/call/meeting success, follow-up creation (title/dueDate/assignee), **idempotent repeat = 1 activity + 1 task**, FOLLOW_UP ไร้ nextAction → reject, cross-account contact reject, cross-account opportunity reject, org isolation (account + ref), timeline pagination 23 แถว 2 หน้าผ่าน use case พร้อม contact hydration, task account derivation จาก opportunity, my-work-today boundary (เทียบกับ clock เดียวกับ use case), complete missing task
+82/82 passing (10 files) — หลัง P1 fixes — Step 3 เพิ่ม 13: note/call/meeting success, follow-up creation (title/dueDate/assignee), **idempotent repeat = 1 activity + 1 task**, FOLLOW_UP ไร้ nextAction → reject, cross-account contact reject, cross-account opportunity reject, org isolation (account + ref), timeline pagination 23 แถว 2 หน้าผ่าน use case พร้อม contact hydration, task account derivation จาก opportunity, my-work-today boundary (เทียบกับ clock เดียวกับ use case), complete missing task
 
 ## TYPECHECK
 PASS
