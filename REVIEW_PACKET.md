@@ -3,8 +3,13 @@
 ## Step
 Step 5 — Command Center My Work Today + Opportunity Activity Integration + System Moment Activities
 
-## COMMIT
-`c3e1b57`
+## COMMITS
+- `c3e1b57` feat(crm): my work today, opportunity activity context, system moment activities (Step 5)
+- `7081f9f` fix(crm): step 5 review fixes — atomic cron system activity + zero-activity risk
+
+## STEP-5 REVIEW FIXES (round 1)
+1. **Rule-cron atomic + self-repairing** — moment + MOMENT_DETECTED เป็น `db.batch()` เดียว; activity ใช้ `INSERT OR IGNORE ... SELECT ... FROM moment_events WHERE dedupe_key = ?` โดย derive key ใน SQL (`'MOMENT-DETECTED:' || e.id`) → rerun ที่ข้าม moment insert ยัง**ซ่อม activity ที่หาย**ได้ และ OR IGNORE กันซ้ำ — **พิสูจน์บน D1 จริง**: จำลอง moment มีอยู่แต่ activity หาย → rerun → moments=1, activities=1 → rerun อีก → ยังคง 1/1 (invariant ตรงตามที่สั่ง)
+2. **Zero-activity no-contact risk** — canonical rule ใน domain: `isOpportunityAtRisk(stage, lastActivityAt, createdAt, now)` — fallback `createdAt` เมื่อไม่เคยมี activity (COALESCE semantics), threshold `NO_CONTACT_RISK_DAYS = 7`, Won/Lost excluded; `Opportunity.createdAt` เพิ่มทั้ง domain/D1 mapper/mock; queue view โชว์ `daysSinceContact` + `atRisk` และ `atRiskCount` (StatCard "No-Contact ≥7 วัน") **ใช้ฟังก์ชันเดียวกับ badge ต่อแถว**; UI แสดง "ยังไม่มี activity · N วัน ⚠" — เทสต์ครบ 5 เคสของ reviewer (0 activity+2วัน / 0 activity+10วัน / activity เมื่อวาน / activity 8 วัน / closed) + boundary 7 วันพอดี + counter=rows consistency
 
 ## FILES CHANGED
 - `migrations/0006_system_activities.sql` (ใหม่) — rebuild `activities` ให้ `created_by` nullable (system rows ไม่มี human actor; SQLite drop NOT NULL ต้อง rebuild) — indexes/CHECKs เดิมครบ, applied local
@@ -43,7 +48,7 @@ Step 5 — Command Center My Work Today + Opportunity Activity Integration + Sys
 - measured latency: next dev render ทันตา; workerd measurement รอบก่อน /admin 0.8s→หน้า / ใช้ pattern query เบากว่าเดิม (แทน ~200 แถว scan ด้วย aggregate)
 
 ## TESTS
-113/113 passing (12 files) — Step 5 เพิ่ม 11: **Bangkok-vs-UTC boundary จริง** (17:30Z = วันที่ 23 ที่ไทย → task due 22 เป็น overdue ทั้งที่ UTC ยังวันที่ 22), today/upcoming boundary + DONE excluded, assignee isolation, workStats parity, next-30 window bound, opportunity last/days/next follow-up, next-task excludes DONE + earliest due, MOMENT_VERIFIED once on repeat, MOMENT_REJECTED once + reason, key determinism, system activity แก้/ลบไม่ได้
+115/115 passing (12 files) — หลัง review fixes — Step 5 เพิ่ม 11: **Bangkok-vs-UTC boundary จริง** (17:30Z = วันที่ 23 ที่ไทย → task due 22 เป็น overdue ทั้งที่ UTC ยังวันที่ 22), today/upcoming boundary + DONE excluded, assignee isolation, workStats parity, next-30 window bound, opportunity last/days/next follow-up, next-task excludes DONE + earliest due, MOMENT_VERIFIED once on repeat, MOMENT_REJECTED once + reason, key determinism, system activity แก้/ลบไม่ได้
 
 ## TYPECHECK
 PASS
@@ -56,7 +61,7 @@ PASS
 
 ## DEVIATIONS
 - `getCommandCenter()` เปลี่ยน signature รับ `userId` (จำเป็นสำหรับ My Work Today; caller เดียวคือหน้า /)
-- MOMENT_DETECTED ของ rule cron เขียนเป็น statement ตามหลัง event insert (ไม่ batch) — ปลอดภัยเพราะเขียนเฉพาะเมื่อ insert สำเร็จ + key idempotent; detection consumer เป็น batch atomic เต็ม
+- ~~rule cron ไม่ batch~~ → แก้แล้วใน `7081f9f` เป็น batch atomic + self-repair
 - workStats นับ HOT เฉพาะ active (ตรง semantic เดิมของหน้า) ต่างจาก `stats().hot` ที่นับทุกสถานะ (ใช้ที่ /analytics)
 
 ## KNOWN RISKS
