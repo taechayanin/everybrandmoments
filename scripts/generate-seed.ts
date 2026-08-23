@@ -23,6 +23,8 @@ const q = (v: string | number | null | undefined): string => {
 const b = (v: boolean): string => (v ? "1" : "0");
 
 const CLEAR_ORDER = [
+  "audit_logs", "tasks", "attachments", "automation_rules",
+  "account_external_ids", "deliveries_external",
   "appointments", "opportunity_solutions", "opportunities",
   "moment_event_solutions", "moment_event_stakeholders", "moment_signals",
   "moment_events", "solution_relations", "solution_packages",
