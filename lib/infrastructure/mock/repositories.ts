@@ -605,6 +605,17 @@ class MockActivityRepository implements ActivityRepository {
     return out;
   }
 
+  async lastActivityByAccounts(ids: AccountId[]): Promise<Map<string, string>> {
+    const wanted = new Set<string>(ids);
+    const out = new Map<string, string>();
+    for (const a of crmActivities) {
+      if (a.deletedAt || !wanted.has(a.accountId)) continue;
+      const prev = out.get(a.accountId);
+      if (!prev || a.occurredAt > prev) out.set(a.accountId, a.occurredAt);
+    }
+    return out;
+  }
+
   async markAnalysisStatus(
     ids: ActivityId[],
     status: "QUEUED" | "PROCESSED" | "FAILED" | "BLOCKED",
@@ -693,6 +704,28 @@ class MockTaskRepository implements TaskRepository {
 
   async listByOpportunity(opportunityId: OpportunityId, limit: number): Promise<CrmTask[]> {
     return crmTasks.filter((t) => t.opportunityId === opportunityId).slice(0, limit);
+  }
+
+  async nextOpenTaskByAccounts(ids: AccountId[]): Promise<Map<string, CrmTask>> {
+    const wanted = new Set<string>(ids);
+    const out = new Map<string, CrmTask>();
+    const candidates = crmTasks
+      .filter(
+        (t) =>
+          t.accountId !== null &&
+          wanted.has(t.accountId) &&
+          (t.status === "OPEN" || t.status === "IN_PROGRESS"),
+      )
+      .sort((a, b) => {
+        if (a.dueDate === null && b.dueDate === null) return a.id.localeCompare(b.id);
+        if (a.dueDate === null) return 1;
+        if (b.dueDate === null) return -1;
+        return a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id);
+      });
+    for (const t of candidates) {
+      if (!out.has(t.accountId!)) out.set(t.accountId!, t);
+    }
+    return out;
   }
 
   async nextOpenTaskByOpportunities(

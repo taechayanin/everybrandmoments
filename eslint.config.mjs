@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     // Cloudflare build artifacts and generated files:
     ".open-next/**",
     ".wrangler/**",
+    "workers/**/.wrangler/**",
     "cloudflare-env.d.ts",
     "seed/**",
   ]),

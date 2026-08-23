@@ -1421,6 +1421,25 @@ class D1ActivityRepository implements ActivityRepository {
     return out;
   }
 
+  async lastActivityByAccounts(ids: AccountId[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (ids.length === 0) return out;
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(
+          `SELECT account_id, MAX(occurred_at) AS last_at
+           FROM activities
+           WHERE organization_id = ? AND account_id IN (${inClause(chunk.length)})
+             AND deleted_at IS NULL
+           GROUP BY account_id`,
+        )
+        .bind(ORG, ...chunk)
+        .all<{ account_id: string; last_at: string }>();
+      for (const r of res.results) out.set(r.account_id, r.last_at);
+    }
+    return out;
+  }
+
   async markAnalysisStatus(
     ids: ActivityId[],
     status: "QUEUED" | "PROCESSED" | "FAILED" | "BLOCKED",
@@ -1567,6 +1586,29 @@ class D1TaskRepository implements TaskRepository {
         .bind(ORG, ...chunk)
         .all<Row>();
       for (const r of res.results) out.set(r.opportunity_id, mapCrmTask(r));
+    }
+    return out;
+  }
+
+  async nextOpenTaskByAccounts(ids: AccountId[]): Promise<Map<string, CrmTask>> {
+    const out = new Map<string, CrmTask>();
+    if (ids.length === 0) return out;
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(
+          `SELECT * FROM (
+             SELECT *, ROW_NUMBER() OVER (
+               PARTITION BY account_id
+               ORDER BY (due_date IS NULL), due_date, id
+             ) AS rn
+             FROM tasks
+             WHERE organization_id = ? AND account_id IN (${inClause(chunk.length)})
+               AND status IN ('OPEN','IN_PROGRESS')
+           ) WHERE rn = 1`,
+        )
+        .bind(ORG, ...chunk)
+        .all<Row>();
+      for (const r of res.results) out.set(r.account_id, mapCrmTask(r));
     }
     return out;
   }

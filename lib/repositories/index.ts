@@ -269,6 +269,8 @@ export interface ActivityRepository {
   softDelete(id: ActivityId, userId: UserId): Promise<boolean>;
   /** opportunity_id -> latest occurred_at, one grouped query (spec §27). */
   lastActivityByOpportunities(ids: OpportunityId[]): Promise<Map<string, string>>;
+  /** account_id -> latest occurred_at, one grouped query (spec §47). */
+  lastActivityByAccounts(ids: AccountId[]): Promise<Map<string, string>>;
   /** Outbox transitions (Step-6 P0/P1 lifecycle). */
   markAnalysisStatus(
     ids: ActivityId[],
@@ -318,6 +320,8 @@ export interface TaskRepository {
   /** opportunity_id -> earliest-due OPEN/IN_PROGRESS task, one bulk query
    * (spec §26 "Next Activity" — never a per-opportunity loop). */
   nextOpenTaskByOpportunities(ids: OpportunityId[]): Promise<Map<string, CrmTask>>;
+  /** account_id -> earliest-due OPEN/IN_PROGRESS task (spec §47/§48). */
+  nextOpenTaskByAccounts(ids: AccountId[]): Promise<Map<string, CrmTask>>;
 }
 
 // ---------- CRM Contacts ----------
