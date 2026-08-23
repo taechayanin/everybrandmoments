@@ -3,6 +3,7 @@ import type {
   AccountId,
   Appointment,
   Channel,
+  CustomerHealth,
   MasterMoment,
   MomentCode,
   MomentEvent,
@@ -22,13 +23,16 @@ import { ACTIVE_MOMENT_STATUSES } from "@/lib/domain/moment";
 import type {
   AccountRepository,
   AccountSearchInput,
+  AccountStats,
   AppointmentRepository,
   CreateMomentInput,
   CreateOpportunityInput,
   CreateSignalInput,
   MasterMomentRepository,
+  MomentListFilter,
   MomentRadarQuery,
   MomentRepository,
+  MomentStats,
   OpportunityRepository,
   Paginated,
   Repositories,
@@ -337,6 +341,36 @@ class D1AccountRepository implements AccountRepository {
     const items = await hydrateAccounts(this.db, res.results.slice(0, input.limit));
     return { items, nextCursor: hasMore ? String(offset + input.limit) : undefined };
   }
+
+  async stats(): Promise<AccountStats> {
+    const row = await this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN customer_since IS NOT NULL AND customer_since != '' THEN 1 ELSE 0 END) AS active,
+           SUM(CASE WHEN health = 'Healthy' THEN 1 ELSE 0 END) AS healthy,
+           COALESCE(SUM(lifetime_value), 0) AS ltv,
+           COALESCE(SUM(gross_profit), 0) AS gp
+         FROM accounts WHERE organization_id = ?`,
+      )
+      .bind(ORG)
+      .first<{ active: number | null; healthy: number | null; ltv: number; gp: number }>();
+    return {
+      activeAccounts: row?.active ?? 0,
+      healthyCount: row?.healthy ?? 0,
+      totalLtv: row?.ltv ?? 0,
+      totalGp: row?.gp ?? 0,
+    };
+  }
+
+  async listByHealth(health: CustomerHealth, limit: number): Promise<Account[]> {
+    const res = await this.db
+      .prepare(
+        "SELECT * FROM accounts WHERE organization_id = ? AND health = ? ORDER BY account_score DESC LIMIT ?",
+      )
+      .bind(ORG, health, limit)
+      .all<Row>();
+    return hydrateAccounts(this.db, res.results);
+  }
 }
 
 class D1MomentRepository implements MomentRepository {
@@ -416,6 +450,52 @@ class D1MomentRepository implements MomentRepository {
       .bind(ORG)
       .all<Row>();
     return hydrateEvents(this.db, res.results);
+  }
+
+  async listFiltered(filter: MomentListFilter): Promise<MomentEvent[]> {
+    const conditions = ["organization_id = ?"];
+    const binds: unknown[] = [ORG];
+    if (filter.statuses && filter.statuses.length > 0) {
+      conditions.push(`status IN (${inClause(filter.statuses.length)})`);
+      binds.push(...filter.statuses);
+    }
+    if (filter.momentCodes && filter.momentCodes.length > 0) {
+      conditions.push(`moment_code IN (${inClause(filter.momentCodes.length)})`);
+      binds.push(...filter.momentCodes);
+    }
+    if (filter.activeOnly) {
+      conditions.push(`status IN (${inClause(ACTIVE_MOMENT_STATUSES.length)})`);
+      binds.push(...ACTIVE_MOMENT_STATUSES);
+    }
+    const order = filter.orderByExpectedDateDesc
+      ? "expected_event_date DESC"
+      : "detected_at DESC";
+    const res = await this.db
+      .prepare(
+        `SELECT * FROM moment_events WHERE ${conditions.join(" AND ")} ORDER BY ${order} LIMIT ?`,
+      )
+      .bind(...binds, filter.limit)
+      .all<Row>();
+    return hydrateEvents(this.db, res.results);
+  }
+
+  async stats(): Promise<MomentStats> {
+    const total =
+      "(score_business_fit + score_intent + score_timing + score_wallet + score_relationship)";
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS detected,
+           SUM(CASE WHEN ${total} >= 85 THEN 1 ELSE 0 END) AS hot,
+           SUM(CASE WHEN status = 'Won' THEN 1 ELSE 0 END) AS won
+         FROM moment_events WHERE organization_id = ?`,
+      )
+      .bind(ORG)
+      .first<{ detected: number; hot: number | null; won: number | null }>();
+    return {
+      detected: row?.detected ?? 0,
+      hot: row?.hot ?? 0,
+      won: row?.won ?? 0,
+    };
   }
 
   async radar(query: MomentRadarQuery): Promise<Paginated<MomentEvent>> {

@@ -1,6 +1,5 @@
 import type { Account, MomentEvent } from "@/lib/types";
 import { getRepositories } from "@/lib/infrastructure";
-import { isActiveMomentStatus } from "@/lib/domain/moment";
 
 export interface SuccessRow {
   event: MomentEvent;
@@ -16,13 +15,45 @@ export interface CustomerSuccessView {
   renewals: SuccessRow[];
 }
 
+const SECTION_LIMIT = 20;
+
 export async function getCustomerSuccessView(): Promise<CustomerSuccessView> {
   const repos = await getRepositories();
-  const [events, accountsPage] = await Promise.all([
-    repos.moments.listAll(),
-    repos.accounts.search({ limit: 1000 }),
-  ]);
-  const accountById = new Map(accountsPage.items.map((a) => [a.id, a]));
+  // One bounded, filtered query per dashboard section — no listAll scans.
+  const [accountStats, atRisk, delivered, recover, winback, renewals] =
+    await Promise.all([
+      repos.accounts.stats(),
+      repos.accounts.listByHealth("At Risk", SECTION_LIMIT),
+      repos.moments.listFiltered({
+        statuses: ["Won", "Delivery"],
+        orderByExpectedDateDesc: true,
+        limit: 8,
+      }),
+      repos.moments.listFiltered({
+        momentCodes: ["EBM Recover"],
+        activeOnly: true,
+        limit: SECTION_LIMIT,
+      }),
+      repos.moments.listFiltered({
+        momentCodes: ["EBM Return"],
+        activeOnly: true,
+        limit: SECTION_LIMIT,
+      }),
+      repos.moments.listFiltered({
+        momentCodes: ["EBM Repeat", "EBM Season"],
+        activeOnly: true,
+        limit: SECTION_LIMIT,
+      }),
+    ]);
+
+  // Hydrate the referenced accounts in one batch lookup.
+  const accountIds = [
+    ...new Set(
+      [...delivered, ...recover, ...winback, ...renewals].map((e) => e.accountId),
+    ),
+  ];
+  const accounts = await repos.accounts.getByIds(accountIds);
+  const accountById = new Map(accounts.map((a) => [a.id as string, a]));
 
   const withAccount = (list: MomentEvent[]): SuccessRow[] =>
     list.flatMap((event) => {
@@ -31,26 +62,11 @@ export async function getCustomerSuccessView(): Promise<CustomerSuccessView> {
     });
 
   return {
-    healthyCount: accountsPage.items.filter((a) => a.health === "Healthy").length,
-    atRisk: accountsPage.items.filter((a) => a.health === "At Risk"),
-    delivered: withAccount(
-      events
-        .filter((e) => ["Won", "Delivery"].includes(e.status))
-        .sort((a, b) => b.expectedEventDate.localeCompare(a.expectedEventDate))
-        .slice(0, 8),
-    ),
-    recover: withAccount(
-      events.filter((e) => e.momentType === "EBM Recover" && isActiveMomentStatus(e.status)),
-    ),
-    winback: withAccount(
-      events.filter((e) => e.momentType === "EBM Return" && isActiveMomentStatus(e.status)),
-    ),
-    renewals: withAccount(
-      events.filter(
-        (e) =>
-          ["EBM Repeat", "EBM Season"].includes(e.momentType) &&
-          isActiveMomentStatus(e.status),
-      ),
-    ),
+    healthyCount: accountStats.healthyCount,
+    atRisk,
+    delivered: withAccount(delivered),
+    recover: withAccount(recover),
+    winback: withAccount(winback),
+    renewals: withAccount(renewals),
   };
 }

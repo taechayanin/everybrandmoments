@@ -4,6 +4,7 @@ import type {
   AccountTier,
   Appointment,
   Channel,
+  CustomerHealth,
   MasterMoment,
   MomentCode,
   MomentEvent,
@@ -38,11 +39,21 @@ export interface AccountSearchInput {
   cursor?: string;
 }
 
+/** Portfolio aggregates computed inside the store — dashboards must not listAll. */
+export interface AccountStats {
+  activeAccounts: number;
+  healthyCount: number;
+  totalLtv: number;
+  totalGp: number;
+}
+
 export interface AccountRepository {
   getById(id: AccountId): Promise<Account | null>;
   /** Bulk lookup for batch read models — never loop getById per row. */
   getByIds(ids: AccountId[]): Promise<Account[]>;
   search(input: AccountSearchInput): Promise<Paginated<Account>>;
+  stats(): Promise<AccountStats>;
+  listByHealth(health: CustomerHealth, limit: number): Promise<Account[]>;
 }
 
 // ---------- Moments ----------
@@ -70,6 +81,22 @@ export interface CreateMomentInput {
   ownerId: UserId;
 }
 
+/** Moment aggregates computed inside the store — dashboards must not listAll. */
+export interface MomentStats {
+  detected: number;
+  hot: number;
+  won: number;
+}
+
+export interface MomentListFilter {
+  statuses?: MomentEventStatus[];
+  momentCodes?: MomentCode[];
+  activeOnly?: boolean;
+  /** newest expected_event_date first; default is newest detected first */
+  orderByExpectedDateDesc?: boolean;
+  limit: number;
+}
+
 export interface MomentRepository {
   getById(id: MomentEventId): Promise<MomentEvent | null>;
   getByIds(ids: MomentEventId[]): Promise<MomentEvent[]>;
@@ -77,7 +104,11 @@ export interface MomentRepository {
   /** Batch variant for list pages — one query, not one per account. */
   findActiveByAccounts(accountIds: AccountId[]): Promise<MomentEvent[]>;
   listByAccount(accountId: AccountId): Promise<MomentEvent[]>;
+  /** Unbounded — mock/tests only; production reads use radar/listFiltered/stats. */
   listAll(): Promise<MomentEvent[]>;
+  /** Bounded, filtered read for dashboard sections — one query per section. */
+  listFiltered(filter: MomentListFilter): Promise<MomentEvent[]>;
+  stats(): Promise<MomentStats>;
   radar(query: MomentRadarQuery): Promise<Paginated<MomentEvent>>;
   create(input: CreateMomentInput): Promise<MomentEvent>;
   updateStatus(id: MomentEventId, status: MomentEventStatus): Promise<void>;

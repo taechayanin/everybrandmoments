@@ -2,6 +2,7 @@ import type {
   Account,
   AccountId,
   Appointment,
+  CustomerHealth,
   MasterMoment,
   MomentCode,
   MomentEvent,
@@ -19,13 +20,16 @@ import { isActiveMomentStatus } from "@/lib/domain/moment";
 import { priorityOf, totalScore } from "@/lib/domain/score";
 import type {
   AccountRepository,
+  AccountStats,
   AppointmentRepository,
   CreateMomentInput,
   CreateOpportunityInput,
   CreateSignalInput,
   MasterMomentRepository,
+  MomentListFilter,
   MomentRadarQuery,
   MomentRepository,
+  MomentStats,
   OpportunityRepository,
   Paginated,
   Repositories,
@@ -81,6 +85,21 @@ class MockAccountRepository implements AccountRepository {
     if (input.ownerId) items = items.filter((a) => a.ownerId === input.ownerId);
     return paginate(items, input.limit, input.cursor);
   }
+
+  async stats(): Promise<AccountStats> {
+    return {
+      activeAccounts: ACCOUNTS.filter((a) => a.customerSince).length,
+      healthyCount: ACCOUNTS.filter((a) => a.health === "Healthy").length,
+      totalLtv: ACCOUNTS.reduce((s, a) => s + a.ltv, 0),
+      totalGp: ACCOUNTS.reduce((s, a) => s + a.grossProfit, 0),
+    };
+  }
+
+  async listByHealth(health: CustomerHealth, limit: number): Promise<Account[]> {
+    return ACCOUNTS.filter((a) => a.health === health)
+      .sort((a, b) => b.accountScore - a.accountScore)
+      .slice(0, limit);
+  }
 }
 
 class MockMomentRepository implements MomentRepository {
@@ -114,6 +133,33 @@ class MockMomentRepository implements MomentRepository {
 
   async listAll(): Promise<MomentEvent[]> {
     return [...events];
+  }
+
+  async listFiltered(filter: MomentListFilter): Promise<MomentEvent[]> {
+    let items = [...events];
+    if (filter.statuses && filter.statuses.length > 0) {
+      items = items.filter((e) => filter.statuses!.includes(e.status));
+    }
+    if (filter.momentCodes && filter.momentCodes.length > 0) {
+      items = items.filter((e) => filter.momentCodes!.includes(e.momentType));
+    }
+    if (filter.activeOnly) {
+      items = items.filter((e) => isActiveMomentStatus(e.status));
+    }
+    items.sort(
+      filter.orderByExpectedDateDesc
+        ? (a, b) => b.expectedEventDate.localeCompare(a.expectedEventDate)
+        : (a, b) => b.detectedAt.localeCompare(a.detectedAt),
+    );
+    return items.slice(0, filter.limit);
+  }
+
+  async stats(): Promise<MomentStats> {
+    return {
+      detected: events.length,
+      hot: events.filter((e) => priorityOf(totalScore(e.score)) === "HOT").length,
+      won: events.filter((e) => e.status === "Won").length,
+    };
   }
 
   async radar(query: MomentRadarQuery): Promise<Paginated<MomentEvent>> {
