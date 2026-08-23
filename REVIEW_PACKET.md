@@ -1,36 +1,37 @@
 # REVIEW PACKET
 
 ## Step
-Step 1 — CRM Activity Layer: Migration 0004 + Domain + Zod Contracts + Seed + local migration tests
+Step 2 — CRM Activity Layer: Repositories (interfaces + mock + D1 adapters + tests)
 
 ## Goal
-วางฐานข้อมูลและ domain layer ของ CRM Activity Layer ตาม IMPLEMENTATION_PLAN.md (rev 4, approved): ตาราง `activities` + `activity_ai_suggestions`, rebuild `contacts`/`tasks` ให้ relationally safe, enum เดียวทุกชั้น, idempotency keys — **ยังไม่มี repository/use case/UI (Step 2–4)**
+วาง data-access layer ของ CRM ตาม IMPLEMENTATION_PLAN.md (rev 4, approved): Activity/Task/Contact/Suggestion repositories + `InteractionWriteRepository` unit-of-work — **ยังไม่มี use case / server action / UI (Step 3–4)**
 
 ## Commit
-`69b9e72`
+`8a460ec`
 
 ## Files Changed
-- `migrations/0004_crm_activity_layer.sql` (ใหม่) — 4 ส่วนตามแผน
-- `lib/domain/activity.ts` (ใหม่) — branded ids (ACT/TSK/CT/SUG) + guards, enums ทั้งหมด (`ACTIVITY_TYPES` 16, `CALL_OUTCOMES` 7, `MEETING_TYPES` 6, `CONTACT_ROLES` 8, `TASK_STATUSES`/`TASK_PRIORITIES` 4/4, `INFLUENCE_LEVELS`, `CONTACT_STATUSES`, `SUGGESTION_STATUSES`), stable key helpers (`followUpTaskKey`, `suggestionTaskKey`), entity interfaces (Activity, CrmTask, ActivityAnalysis)
-- `lib/contracts/crm.ts` (ใหม่) — strict zod: CreateNote/LogCall/LogMeeting/UpdateActivity/CreateTask/CompleteTask/CreateContact/UpdateContact/ActivityAnalysis/DecideSuggestion + typed metadata schemas; ทุก string/array มี max; วันที่ตรวจ real-calendar; `clientRequestId` บังคับในทุก create
-- `scripts/generate-seed.ts` + `seed/seed.sql` — contacts INSERT เป็น schema ใหม่ (first contact = DECISION_MAKER), sample activities 6 แถวใน 3 accounts, CLEAR_ORDER เพิ่ม activity_ai_suggestions/activities
-- `lib/infrastructure/cloudflare/d1/repositories.ts` — **1 จุด compatibility**: contact mapper อ่าน `job_title ?? role` (โค้ดเดิมอ่านคอลัมน์ `role` ที่ถูก rename — ไม่แตะจุดอื่น, Contact CRM model เต็มมาใน Step 2)
-- `tests/crm-contracts.test.ts` (ใหม่) — 14 เทสต์
+- `lib/repositories/index.ts` — interfaces ใหม่ 5 ชุด + input types + `Repositories` เพิ่ม `activities/tasks/contacts/suggestions/interactions`
+- `lib/infrastructure/cloudflare/d1/repositories.ts` — D1 adapters ทั้ง 5 + row mappers + shared insert-statement helpers
+- `lib/infrastructure/mock/repositories.ts` — mock adapters ทั้ง 5 (mirror semantics เดียวกัน; contacts seed จาก embedded account data ตรงกับ id ใน seed.sql)
+- `lib/domain/activity.ts` — เพิ่ม `CrmContact`, `ActivitySuggestion` entities
+- `lib/types.ts` — barrel export `domain/activity`
+- `tests/crm-repositories.test.ts` (ใหม่) — 11 เทสต์
 
 ## Architecture Changes
-ไม่มีการเปลี่ยน layer — เพิ่ม domain module + contracts module ตามแบบเดิม (`lib/domain/*`, contracts แยกที่ `lib/contracts/` ด้วย relative import เพื่อให้ jobs worker ใช้ร่วมได้ใน Step 6)
+ตาม layer เดิม — จุดที่ต้องรีวิว: **`InteractionWriteRepository`** (plan rev 2 item 4) แยก unit-of-work ออกจาก entity repository:
+- `ActivityRepository`/`TaskRepository` = CRUD ของ entity ตัวเองล้วน ๆ ไม่แตะข้าม table
+- `D1InteractionWriteRepository.logInteraction()` ประกอบ statement จาก helper ที่ใช้ร่วมกับ repo ปกติ → ยิง **`db.batch()` เดียว**: activity INSERT OR IGNORE + follow-up task INSERT OR IGNORE (key `ACTIVITY:<requestId>:FOLLOWUP`) + audit INSERT OR IGNORE (deterministic id `AUD-ACT-<requestId>`) → read-back survivor ด้วย unique key → `deduped` flag
+- โยน error ถ้าไม่มี `clientRequestId` (unit ทั้งหมด key จากมัน)
 
 ## Database / Migration
-`0004_crm_activity_layer.sql` (applied **local เท่านั้น**):
-1. **contacts rebuild** — `organization_id NOT NULL` derive จาก owning account ด้วย `LEFT JOIN` (orphan → NULL → NOT NULL violation → fail ดัง ไม่ทิ้งแถวเงียบ ๆ), legacy `role`→`job_title`, เพิ่ม department/line_id/buying_role/influence_level/status/notes/updated_at + CHECKs + `idx_contacts_org_account`
-2. **tasks rebuild** — FK ครบ 7 (org/account/contact/moment_event/opportunity/assignee/created_by), `client_request_id` + `uq_tasks_client_request` partial unique, status normalize `CASE ... ELSE NULL` (unknown → fail ดัง), priority default NORMAL + CHECKs + `idx_tasks_org_assignee_due`
-3. **activities** — ตาม spec §9 + `client_request_id` (+`uq_activities_client_request`), soft delete (`deleted_at/deleted_by`), CHECK activity_type 16 ค่า, indexes spec §40
-4. **activity_ai_suggestions** — payload_json + confidence CHECK 0–1 + status CHECK + index
-- ลำดับ: contacts → tasks → activities → suggestions (**ต่างจากลำดับเลขในแผนที่เขียน activities ก่อน** — เหตุผล: ทุก FK ต้องชี้ตารางเวอร์ชันสุดท้าย; พฤติกรรมรวมเท่ากัน)
-- `PRAGMA defer_foreign_keys = on` กัน FK-check กลาง rebuild window
+ไม่มี migration ใหม่ — ใช้ 0004 จาก Step 1 (ยังไม่ apply remote)
 
 ## Repository / Use Case Changes
-ไม่มี (Step 2) — ยกเว้น compatibility mapper 1 จุดข้างบน
+- `ActivityRepository`: getById, **listByAccount (keyset `occurred_at DESC, id DESC`, default 20, filter by types, ไม่เห็น soft-deleted)**, listRecentByAccounts (ROW_NUMBER OVER PARTITION — 1 query/chunk ≤50), create (idempotent), update, softDelete (guarded `deleted_at IS NULL`), lastActivityByOpportunities (GROUP BY MAX — spec §27)
+- `TaskRepository`: create (idempotent), complete (guarded `status IN (OPEN,IN_PROGRESS)` → idempotent), listByAssignee (overdue/today/upcoming — `today` มาจาก clock ของ caller), listByAccount, listByOpportunity
+- `ContactRepository`: getById/getByIds (chunked)/listByAccount (primary-first)/create/update
+- `SuggestionRepository`: getById/create/listPendingByAccount (JOIN activities เพื่อ scope account — table ไม่มี account_id ตรง)
+- ทุก query scope `organization_id = ?`
 
 ## API / Server Actions
 ไม่มี (Step 3)
@@ -39,29 +40,25 @@ Step 1 — CRM Activity Layer: Migration 0004 + Domain + Zod Contracts + Seed + 
 ไม่มี (Step 4)
 
 ## Figma Comparison
-N/A — Step นี้ไม่มี UI; Figma link ยังคงเป็น open item ก่อนเริ่ม Step 4
+N/A — ไม่มี UI ใน step นี้; Figma link ยังเป็น open item ก่อน Step 4
 
 ## Security
-- Authentication: ไม่เปลี่ยน (write gate เดิม)
-- Organization Scope: contacts/activities/tasks/suggestions มี `organization_id NOT NULL` + FK → query ทุกตัวใน Step 2 scope ได้ที่ DB จริง; backfill ไม่ hardcode tenant
-- Permissions: ไม่เปลี่ยน
-- Validation: zod strict ทุก contract + DB CHECK ซ้ำอีกชั้น (defense in depth)
-- Write Gate: ไม่เปลี่ยน
+- Organization Scope: ทุก SELECT/UPDATE/INSERT ใน adapters ใหม่ bind `ORG`; suggestions JOIN ตรวจ `a.organization_id = s.organization_id`
+- Validation: repositories รับ typed inputs — zod strict อยู่ที่ boundary (Step 3 server actions)
+- Write Gate: ยังไม่แตะ (Step 3)
+- Soft delete guard กัน double-delete; complete guard กันข้าม state
 
 ## Performance
-- Query Count: ไม่มี query path ใหม่ใน runtime
-- Pagination: index `(org, account, occurred_at DESC)` รองรับ keyset ของ Step 2
-- N+1: N/A
-- Caching: ไม่เปลี่ยน
-- Known Risks: ไม่มีใหม่
+- Timeline: 1 keyset query (LIMIT n+1, ไม่มี OFFSET) — ตรงเป้า spec §24/§53
+- listRecentByAccounts: window function 1 query ต่อ chunk ≤50 — ไม่ loop ต่อ account
+- lastActivityByOpportunities: GROUP BY 1 query ต่อ chunk
+- ไม่มี N+1 ใหม่; ไม่มี unbounded query ใหม่
 
 ## Tests Added
-`tests/crm-contracts.test.ts` — 14 เทสต์สองกลุ่ม:
-- Contracts: note valid/invalid, strict unknown-field + wrong-prefix id, call outcome enum, meeting budget ordering + type enum, task/contact enums, ActivityAnalysis bounds (moment code จาก catalog union, confidence ≤1), stable key determinism
-- **Migration drift**: parse `0004` แล้วเทียบ CHECK IN(...) ทุกตัวกับ domain arrays (activity_type, task status/priority, buying_role, influence, contact status, suggestion status), confidence bounds, unique index สองตัวมี `WHERE client_request_id IS NOT NULL`, backfill ใช้ LEFT JOIN + ไม่มี hardcode ORG ใน INSERT, task CASE เป็น `ELSE NULL` ไม่ใช่ `ELSE 'OPEN'`
+`tests/crm-repositories.test.ts` — 11 เทสต์: activity create idempotency, keyset 25 แถว 2 หน้า (ไม่ overlap, DESC order ตรวจทุกคู่), type filter + soft delete, lastActivity max ต่อ opportunity, **logInteraction unit idempotency (activity+task คู่กัน, replay → deduped + id เดิมทั้งคู่)**, missing clientRequestId → throw, task complete idempotent, due bands แยกถูก, contacts seed primary-first + DECISION_MAKER, contact create/update round-trip, suggestions PENDING scope ต่อ account
 
 ## Test Results
-55 / 55 passing (8 files)
+66 / 66 passing (9 files)
 
 ## Typecheck
 PASS
@@ -70,29 +67,26 @@ PASS
 PASS
 
 ## Build
-PASS (next build สำเร็จ)
+PASS
 
-## Local Migration Verification (executed)
-- Preflight ทั้ง 6 query = 0 orphan/unknown (contacts 21, tasks 0 rows ก่อน migrate)
-- Apply local: ✅ 8 commands
-- หลัง apply: contacts 21→21 แถว, `organization_id='ORG-001'` ครบ 21, `job_title` ครบ 21; ตาราง+index ใหม่ครบทั้ง 10 ชื่อ
-- CHECK enforcement ยิงจริง: activity_type แปลก / task status lowercase / confidence 1.5 → **fail ทั้งสามเคส**
-- Re-seed schema ใหม่: 856 statements สำเร็จ → activities 6, DECISION_MAKER 20, contacts 21
+## D1 Verification (local, executed)
+- ROW_NUMBER OVER (PARTITION BY) รันได้จริงบน D1 local — คืน rn=1 ต่อ account ถูกต้อง
+- Unique index `uq_activities_client_request` dedupe จริง: INSERT 2 แถว key เดียว → survivor 1 แถว
+- (production incident ก่อนหน้า resolve แล้ว: root cause = Secret-Change version; redeploy แล้ว ทุก route 200)
 
 ## Known Limitations
-- Migration ยังไม่ apply remote — ต้องผ่าน review + รัน preflight บน remote ก่อน (Workflow Rule 6)
-- Domain `Contact` (UI-facing) ยังเป็น shape เดิม (`name/role/phone`) — CRM Contact เต็มรูปแบบมากับ ContactRepository ใน Step 2
-- `activities.metadata_json` ยังไม่มี consumer — typed schemas เตรียมไว้แล้ว
+- Mock `listRecentByAccounts` loop ต่อ account ใน memory (semantics เท่ากัน; D1 ใช้ window function)
+- Contact create ไม่มี client_request_id dedupe (table ไม่มีคอลัมน์ — ตามแผน; double-submit contact เป็น edge ที่ Step 3 ป้องกันที่ form)
+- `InteractionWriteRepository` ยังไม่ถูกเรียกจากที่ไหน (Step 3)
 
 ## Decisions / Trade-offs
-- ลำดับ section ใน migration ต่างจากเลขข้อในแผน (FK integrity — อธิบายข้างบน)
-- Contact mapper compatibility fallback `job_title ?? role` — จำเป็นเพื่อไม่ให้ Account 360 เดิมพังหลัง migration ทั้ง local/remote; ลบ fallback ได้เมื่อ remote apply แล้ว
-- Seed ตั้ง first contact ของทุก account เป็น DECISION_MAKER — ให้ UI Step 4 มีข้อมูลโชว์; ข้อมูลจริงทีมแก้ได้ใน UI
+- `lastActivityByOpportunities` วางบน `ActivityRepository` (data อยู่ table activities) แทน `OpportunityRepository` ตามตัวอักษรของแผน — พฤติกรรม/จำนวน query เท่ากัน แจ้งเป็น deviation ให้ตัดสิน
+- Audit id ใช้ `AUD-ACT-<requestId>` (idempotent ผ่าน PK) — สอดคล้อง pattern `AUD:SUG:` ที่วางไว้สำหรับ Step 6
 
 ## Things Reviewer Should Check Carefully
-1. Migration ordering + `PRAGMA defer_foreign_keys` — เพียงพอสำหรับ D1 remote apply ไหม (local ผ่านแล้ว)
-2. `LogMeetingSchema` ใช้ `.refine` ระดับ object หลัง `.strict()` — พฤติกรรม unknown-field ยัง strict (มีเทสต์ยืนยัน)
-3. Drift test ผูกกับ ordering ของ `as const` arrays — ถ้า reorder enum โดยไม่แตะ migration เทสต์จะ fail (ตั้งใจให้เข้มแบบนี้)
+1. `logInteraction`: batch มี guard เฉพาะ unique keys (ไม่มี WHERE EXISTS ข้าม statement) — เพียงพอสำหรับเคสนี้เพราะทุก statement เป็น INSERT OR IGNORE ที่ key จาก requestId เดียวกัน (ไม่มีเงื่อนไขสถานะแบบ suggestion accept)
+2. Keyset cursor เป็น plain `occurredAt|id` (ไม่ encode) — client จะเห็นค่า; ยอมรับได้ไหมหรืออยากให้ base64
+3. `listByAssignee` ตัด task ที่ `due_date IS NULL` ออกทุก band — ตีความจาก spec §18; ถูกต้องตามที่ตั้งใจไหม
 
 ## Next Proposed Step
-Step 2 — Repositories (Activity/Task/Contact/Suggestion/InteractionWrite + opportunity lastActivity, mock + D1, repo tests) — รอ `REVIEW APPROVED — PROCEED`
+Step 3 — Use Cases + Server Actions (create-note/log-call/log-meeting/create-follow-up/contacts/get-account-timeline/get-my-work-today + write gate + zod + idempotency wiring) — รอ `REVIEW APPROVED — PROCEED`
