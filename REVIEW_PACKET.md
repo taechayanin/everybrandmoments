@@ -1,68 +1,67 @@
 # REVIEW PACKET
 
 ## Step
-Pre-sprint cleanup — close remaining known issues before CRM Activity Layer sprint
+Step 1 — CRM Activity Layer: Migration 0004 + Domain + Zod Contracts + Seed + local migration tests
 
 ## Goal
-เคลียร์ non-blockers ที่ค้างจากรอบ review ก่อนหน้า เพื่อให้ CRM sprint เริ่มจากฐานที่สะอาด:
-1. Remote re-seed ล้มเหลวจาก FK constraint (audit_logs อ้าง organizations แต่ไม่ถูกล้างก่อน)
-2. Signals ที่ job ตกลง DLQ ค้างสถานะ `queued` ตลอดกาล
-3. Analytics / Customer Success ยังใช้ `moments.listAll()` + `accounts.search({limit:1000})` full scans
+วางฐานข้อมูลและ domain layer ของ CRM Activity Layer ตาม IMPLEMENTATION_PLAN.md (rev 4, approved): ตาราง `activities` + `activity_ai_suggestions`, rebuild `contacts`/`tasks` ให้ relationally safe, enum เดียวทุกชั้น, idempotency keys — **ยังไม่มี repository/use case/UI (Step 2–4)**
 
-## Commits
-- `98bf02f` fix(seed): clear audit/task/attachment tables before re-seed
-- `794f85a` fix(jobs): consume DLQ and mark dead-lettered signals failed
-- `0e656ec` perf(dashboards): store-side aggregates replace listAll scans
-- `fa2ccd8` fix(jobs): DLQ consumer retries transient D1 failures (review round-1 item 7)
+## Commit
+`69b9e72`
 
 ## Files Changed
-- scripts/generate-seed.ts, seed/seed.sql — CLEAR_ORDER เพิ่ม audit_logs, tasks, attachments, automation_rules, account_external_ids, deliveries_external (ลบก่อน parents)
-- workers/jobs/src/index.ts — DLQ consumer: invalid payload → log+ack; DETECT_MOMENT → UPDATE moment_signals เป็น `failed` (scoped org+account, guard `!= 'processed'`, idempotent) → ack; transient D1 error → `message.retry()`
-- workers/jobs/wrangler.jsonc — consumer สำหรับ `everybrandmoments-jobs-dlq` `max_retries: 3` (รอบแรกใส่ 0 — แก้ตาม review round-1 ข้อ 7 ใน `fa2ccd8`)
-- lib/repositories/index.ts — เพิ่ม `AccountStats`, `AccountRepository.stats/listByHealth`, `MomentStats`, `MomentListFilter`, `MomentRepository.stats/listFiltered`; ติด doc ว่า `listAll()` = mock/tests only
-- lib/infrastructure/cloudflare/d1/repositories.ts — implement ทั้ง 4 เมธอดด้วย SQL aggregate (`SUM(CASE WHEN …)`) และ filtered SELECT + LIMIT
-- lib/infrastructure/mock/repositories.ts — mirror ทั้ง 4 เมธอดแบบ in-memory
-- lib/application/analytics/get-analytics-view.ts — 2 aggregate queries แทน full scan
-- lib/application/customer-success/get-success-view.ts — 6 bounded queries + 1 batch `getByIds` แทน full scan
-- tests/aggregates.test.ts — ใหม่ 4 เทสต์
+- `migrations/0004_crm_activity_layer.sql` (ใหม่) — 4 ส่วนตามแผน
+- `lib/domain/activity.ts` (ใหม่) — branded ids (ACT/TSK/CT/SUG) + guards, enums ทั้งหมด (`ACTIVITY_TYPES` 16, `CALL_OUTCOMES` 7, `MEETING_TYPES` 6, `CONTACT_ROLES` 8, `TASK_STATUSES`/`TASK_PRIORITIES` 4/4, `INFLUENCE_LEVELS`, `CONTACT_STATUSES`, `SUGGESTION_STATUSES`), stable key helpers (`followUpTaskKey`, `suggestionTaskKey`), entity interfaces (Activity, CrmTask, ActivityAnalysis)
+- `lib/contracts/crm.ts` (ใหม่) — strict zod: CreateNote/LogCall/LogMeeting/UpdateActivity/CreateTask/CompleteTask/CreateContact/UpdateContact/ActivityAnalysis/DecideSuggestion + typed metadata schemas; ทุก string/array มี max; วันที่ตรวจ real-calendar; `clientRequestId` บังคับในทุก create
+- `scripts/generate-seed.ts` + `seed/seed.sql` — contacts INSERT เป็น schema ใหม่ (first contact = DECISION_MAKER), sample activities 6 แถวใน 3 accounts, CLEAR_ORDER เพิ่ม activity_ai_suggestions/activities
+- `lib/infrastructure/cloudflare/d1/repositories.ts` — **1 จุด compatibility**: contact mapper อ่าน `job_title ?? role` (โค้ดเดิมอ่านคอลัมน์ `role` ที่ถูก rename — ไม่แตะจุดอื่น, Contact CRM model เต็มมาใน Step 2)
+- `tests/crm-contracts.test.ts` (ใหม่) — 14 เทสต์
 
 ## Architecture Changes
-ไม่มีการเปลี่ยน layer boundaries — เพิ่มเมธอดใน repository interface แล้ว implement ทั้ง 2 adapters (mock + D1) ตามแบบเดิม
+ไม่มีการเปลี่ยน layer — เพิ่ม domain module + contracts module ตามแบบเดิม (`lib/domain/*`, contracts แยกที่ `lib/contracts/` ด้วย relative import เพื่อให้ jobs worker ใช้ร่วมได้ใน Step 6)
 
 ## Database / Migration
-ไม่มี migration ใหม่ (query ใหม่ใช้ index เดิม: `idx_moment_org_account_status`, org scans)
+`0004_crm_activity_layer.sql` (applied **local เท่านั้น**):
+1. **contacts rebuild** — `organization_id NOT NULL` derive จาก owning account ด้วย `LEFT JOIN` (orphan → NULL → NOT NULL violation → fail ดัง ไม่ทิ้งแถวเงียบ ๆ), legacy `role`→`job_title`, เพิ่ม department/line_id/buying_role/influence_level/status/notes/updated_at + CHECKs + `idx_contacts_org_account`
+2. **tasks rebuild** — FK ครบ 7 (org/account/contact/moment_event/opportunity/assignee/created_by), `client_request_id` + `uq_tasks_client_request` partial unique, status normalize `CASE ... ELSE NULL` (unknown → fail ดัง), priority default NORMAL + CHECKs + `idx_tasks_org_assignee_due`
+3. **activities** — ตาม spec §9 + `client_request_id` (+`uq_activities_client_request`), soft delete (`deleted_at/deleted_by`), CHECK activity_type 16 ค่า, indexes spec §40
+4. **activity_ai_suggestions** — payload_json + confidence CHECK 0–1 + status CHECK + index
+- ลำดับ: contacts → tasks → activities → suggestions (**ต่างจากลำดับเลขในแผนที่เขียน activities ก่อน** — เหตุผล: ทุก FK ต้องชี้ตารางเวอร์ชันสุดท้าย; พฤติกรรมรวมเท่ากัน)
+- `PRAGMA defer_foreign_keys = on` กัน FK-check กลาง rebuild window
 
 ## Repository / Use Case Changes
-ตามรายการไฟล์ข้างบน — `listAll()` ยังอยู่เพื่อ mock/tests แต่ production dashboards ไม่เรียกแล้ว (ยกเว้น get-command-center และ get-revenue-journey — ดู Known Limitations)
+ไม่มี (Step 2) — ยกเว้น compatibility mapper 1 จุดข้างบน
 
 ## API / Server Actions
-ไม่มีการเปลี่ยน
+ไม่มี (Step 3)
 
 ## UI / UX
-ไม่มีการเปลี่ยน (ข้อมูลบนหน้า /analytics และ /customer-success เท่าเดิม แค่วิธี query เปลี่ยน)
+ไม่มี (Step 4)
 
 ## Figma Comparison
-N/A — ไม่มีการเปลี่ยน UI
+N/A — Step นี้ไม่มี UI; Figma link ยังคงเป็น open item ก่อนเริ่ม Step 4
 
 ## Security
 - Authentication: ไม่เปลี่ยน (write gate เดิม)
-- Organization Scope: query ใหม่ทุกตัว scope `organization_id = ?`; DLQ UPDATE scope org + account + guard processed
+- Organization Scope: contacts/activities/tasks/suggestions มี `organization_id NOT NULL` + FK → query ทุกตัวใน Step 2 scope ได้ที่ DB จริง; backfill ไม่ hardcode tenant
 - Permissions: ไม่เปลี่ยน
-- Validation: DLQ ใช้ JobSchema.safeParse ก่อนแตะ DB
+- Validation: zod strict ทุก contract + DB CHECK ซ้ำอีกชั้น (defense in depth)
 - Write Gate: ไม่เปลี่ยน
 
 ## Performance
-- Query Count: /analytics 2 queries (เดิม ~2 full scans + hydration ~8); /customer-success 8 bounded queries (เดิม full scan ทุก moment + ทุก account)
-- Pagination: listFiltered มี LIMIT ทุก call (8 หรือ 20)
-- N+1: ไม่มี — account hydration ใช้ getByIds ชุดเดียว
-- Caching: master-data cache เดิมไม่เปลี่ยน
-- Known Risks: `SUM(CASE WHEN)` เป็น table scan ใน D1 แต่ bounded ที่จำนวน rows ของ org เดียว — โอเคที่ pilot scale; ถ้าโตค่อยเพิ่ม counter table
+- Query Count: ไม่มี query path ใหม่ใน runtime
+- Pagination: index `(org, account, occurred_at DESC)` รองรับ keyset ของ Step 2
+- N+1: N/A
+- Caching: ไม่เปลี่ยน
+- Known Risks: ไม่มีใหม่
 
 ## Tests Added
-- tests/aggregates.test.ts — account stats = full-scan parity, listByHealth filter+bound, moment stats parity, listFiltered filter/order/limit
+`tests/crm-contracts.test.ts` — 14 เทสต์สองกลุ่ม:
+- Contracts: note valid/invalid, strict unknown-field + wrong-prefix id, call outcome enum, meeting budget ordering + type enum, task/contact enums, ActivityAnalysis bounds (moment code จาก catalog union, confidence ≤1), stable key determinism
+- **Migration drift**: parse `0004` แล้วเทียบ CHECK IN(...) ทุกตัวกับ domain arrays (activity_type, task status/priority, buying_role, influence, contact status, suggestion status), confidence bounds, unique index สองตัวมี `WHERE client_request_id IS NOT NULL`, backfill ใช้ LEFT JOIN + ไม่มี hardcode ORG ใน INSERT, task CASE เป็น `ELSE NULL` ไม่ใช่ `ELSE 'OPEN'`
 
 ## Test Results
-41 / 41 passing (7 files) — re-run after fa2ccd8
+55 / 55 passing (8 files)
 
 ## Typecheck
 PASS
@@ -71,21 +70,29 @@ PASS
 PASS
 
 ## Build
-ไม่ได้รัน full OpenNext build ในรอบนี้ (deploy ถูก gate อยู่แล้ว — จะรันเป็นส่วนหนึ่งของ deploy sequence)
+PASS (next build สำเร็จ)
+
+## Local Migration Verification (executed)
+- Preflight ทั้ง 6 query = 0 orphan/unknown (contacts 21, tasks 0 rows ก่อน migrate)
+- Apply local: ✅ 8 commands
+- หลัง apply: contacts 21→21 แถว, `organization_id='ORG-001'` ครบ 21, `job_title` ครบ 21; ตาราง+index ใหม่ครบทั้ง 10 ชื่อ
+- CHECK enforcement ยิงจริง: activity_type แปลก / task status lowercase / confidence 1.5 → **fail ทั้งสามเคส**
+- Re-seed schema ใหม่: 856 statements สำเร็จ → activities 6, DECISION_MAKER 20, contacts 21
 
 ## Known Limitations
-- `get-command-center.ts` และ `get-revenue-journey` ยังใช้ `listAll()` — จงใจเก็บไว้เพราะ CRM sprint §44 จะ redesign Command Center เป็น "My Work Today" อยู่แล้ว (จะแก้ใน sprint นั้นด้วย aggregate ชุดใหม่ ไม่แก้ซ้ำสองรอบ)
-- Signals ที่ mark `failed` ยังไม่มี UI แสดง — โผล่ใน DB เท่านั้น
-- DLQ consumer ยังไม่ persist dead-letter payload ลง table (log อย่างเดียว)
+- Migration ยังไม่ apply remote — ต้องผ่าน review + รัน preflight บน remote ก่อน (Workflow Rule 6)
+- Domain `Contact` (UI-facing) ยังเป็น shape เดิม (`name/role/phone`) — CRM Contact เต็มรูปแบบมากับ ContactRepository ใน Step 2
+- `activities.metadata_json` ยังไม่มี consumer — typed schemas เตรียมไว้แล้ว
 
 ## Decisions / Trade-offs
-- เลือก Option "consumer บน DLQ ใน worker เดียวกัน" แทน worker แยก — โค้ดน้อยกว่า, ไม่มี latency requirement
-- `listFiltered` ออกแบบเป็น filter object แทนเมธอดเฉพาะกิจหลายตัว — CRM sprint ใช้ต่อได้ (เช่น section ของ dashboard ใหม่)
+- ลำดับ section ใน migration ต่างจากเลขข้อในแผน (FK integrity — อธิบายข้างบน)
+- Contact mapper compatibility fallback `job_title ?? role` — จำเป็นเพื่อไม่ให้ Account 360 เดิมพังหลัง migration ทั้ง local/remote; ลบ fallback ได้เมื่อ remote apply แล้ว
+- Seed ตั้ง first contact ของทุก account เป็น DECISION_MAKER — ให้ UI Step 4 มีข้อมูลโชว์; ข้อมูลจริงทีมแก้ได้ใน UI
 
 ## Things Reviewer Should Check Carefully
-1. DLQ UPDATE guard: `processing_status != 'processed'` เพียงพอไหม (ไม่มี guard เวอร์ชัน/timestamp)
-2. `stats()` ของ accounts นับ active จาก `customer_since IS NOT NULL AND != ''` — semantics ตรงกับของเดิม (`a.customerSince` truthy) ไหม
-3. DLQ retry (fa2ccd8): หลัง 3 retries ล้มเหลวหมด message ถูก drop (DLQ ไม่มี DLQ ของตัวเอง) — signals ค้าง `queued` ในเคสนั้น; ยอมรับเป็น residual risk ระดับ observability ไหม
+1. Migration ordering + `PRAGMA defer_foreign_keys` — เพียงพอสำหรับ D1 remote apply ไหม (local ผ่านแล้ว)
+2. `LogMeetingSchema` ใช้ `.refine` ระดับ object หลัง `.strict()` — พฤติกรรม unknown-field ยัง strict (มีเทสต์ยืนยัน)
+3. Drift test ผูกกับ ordering ของ `as const` arrays — ถ้า reorder enum โดยไม่แตะ migration เทสต์จะ fail (ตั้งใจให้เข้มแบบนี้)
 
 ## Next Proposed Step
-CRM Activity Layer — Step 1 (Migration 0004 + Activity domain + Zod contracts) ตาม IMPLEMENTATION_PLAN.md — รอ `PLAN APPROVED — IMPLEMENT STEP 1 ONLY`
+Step 2 — Repositories (Activity/Task/Contact/Suggestion/InteractionWrite + opportunity lastActivity, mock + D1, repo tests) — รอ `REVIEW APPROVED — PROCEED`
