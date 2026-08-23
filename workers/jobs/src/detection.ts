@@ -1,4 +1,5 @@
 import { ACTIVE_MOMENT_STATUSES, type MomentCode } from "../../../lib/domain/moment";
+import { momentActivityKey } from "../../../lib/domain/activity";
 import { signalOccurrenceKey } from "../../../lib/jobs/occurrence";
 import { detectWithClaude, type AiDetectorEnv } from "./ai-detection";
 import {
@@ -237,8 +238,23 @@ export async function detectMomentFromSignals(
   const deduped = dedupReason !== "none";
 
   // Attach evidence + persist validated AI solution recommendations + mark
-  // signals processed — one atomic batch, all org/account scoped.
+  // signals processed + system timeline row — one atomic batch, all
+  // org/account scoped. The MOMENT_DETECTED activity is keyed by the moment
+  // event id, so redelivery / extra evidence on the same event writes nothing
+  // (Step 5; created_by NULL = system actor).
   const followUps = [
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO activities (
+           id, organization_id, account_id, moment_event_id, activity_type,
+           title, body, occurred_at, created_at, updated_at, client_request_id
+         ) VALUES (?, ?, ?, ?, 'MOMENT_DETECTED', ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        `ACT-${crypto.randomUUID()}`, job.organizationId, job.accountId,
+        finalEventId, `ตรวจพบ Moment — ${result.momentCode}`, result.subMoment,
+        now, now, now, momentActivityKey("DETECTED", finalEventId),
+      ),
     db
       .prepare(
         `UPDATE moment_signals

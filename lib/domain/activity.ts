@@ -99,6 +99,18 @@ export function suggestionTaskKey(suggestionId: SuggestionId): string {
   return `SUG:${suggestionId}`;
 }
 
+/**
+ * System moment-lifecycle activity (Step 5): one timeline row per moment
+ * event per lifecycle change — queue redelivery / repeated verification
+ * collides on this key and writes nothing.
+ */
+export function momentActivityKey(
+  kind: "DETECTED" | "VERIFIED" | "REJECTED",
+  momentEventId: string,
+): string {
+  return `MOMENT-${kind}:${momentEventId}`;
+}
+
 // ---------- entities ----------
 
 /** One row in the unified Account Timeline (spec §8–§9). */
@@ -115,7 +127,8 @@ export interface Activity {
   nextAction: string | null;
   nextActionAt: string | null; // ISO datetime
   occurredAt: string; // ISO datetime
-  createdBy: UserId;
+  /** null = written by the system (moment lifecycle), not a person. */
+  createdBy: UserId | null;
   createdAt: string;
   updatedAt: string;
   /** Type-specific extras (call duration, meeting type, budget…) — validated before write. */

@@ -70,10 +70,11 @@ export default async function OpportunityQueue() {
               <th className="px-4 py-3 font-semibold">Owner</th>
               <th className="px-4 py-3 font-semibold">Stage / SLA</th>
               <th className="px-4 py-3 font-semibold">Next Action</th>
+              <th className="px-4 py-3 font-semibold">Activity</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {view.rows.map(({ opportunity: o, account: acc, event: e, ownerName }) => {
+            {view.rows.map(({ opportunity: o, account: acc, event: e, ownerName, daysSinceLastActivity, nextFollowUp }) => {
               const score = e ? totalScore(e.score) : 0;
               return (
                 <tr key={o.id} className="align-top hover:bg-slate-50/60">
@@ -101,6 +102,29 @@ export default async function OpportunityQueue() {
                     )}
                   </td>
                   <td className="max-w-[220px] px-4 py-3 text-[11px] text-slate-600">{o.nextAction}</td>
+                  <td className="max-w-[200px] px-4 py-3 text-[11px]">
+                    {daysSinceLastActivity === null ? (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
+                        ยังไม่มี activity
+                      </span>
+                    ) : (
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                          daysSinceLastActivity >= 7
+                            ? "bg-rose-100 text-rose-700"
+                            : "bg-emerald-50 text-emerald-700"
+                        }`}
+                      >
+                        คุยล่าสุด {daysSinceLastActivity === 0 ? "วันนี้" : `${daysSinceLastActivity} วันก่อน`}
+                      </span>
+                    )}
+                    {nextFollowUp && (
+                      <p className="mt-1 text-[10px] text-amber-700">
+                        ⏭ {nextFollowUp.title}
+                        {nextFollowUp.dueDate ? ` — ${nextFollowUp.dueDate}` : ""}
+                      </p>
+                    )}
+                  </td>
                 </tr>
               );
             })}

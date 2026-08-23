@@ -57,6 +57,7 @@ export interface AccountSearchInput {
 export interface AccountStats {
   activeAccounts: number;
   healthyCount: number;
+  atRiskCount: number;
   totalLtv: number;
   totalGp: number;
 }
@@ -106,9 +107,21 @@ export interface MomentListFilter {
   statuses?: MomentEventStatus[];
   momentCodes?: MomentCode[];
   activeOnly?: boolean;
+  /** Inclusive expected_event_date window (ISO dates) — e.g. next-30-days. */
+  expectedFrom?: string;
+  expectedTo?: string;
   /** newest expected_event_date first; default is newest detected first */
   orderByExpectedDateDesc?: boolean;
   limit: number;
+}
+
+/** Command Center counters — one aggregate query, computed in the store. */
+export interface MomentWorkStats {
+  activeHot: number;
+  newToday: number;
+  newThisWeek: number;
+  qualifiedActive: number;
+  wonThisMonth: number;
 }
 
 export interface MomentRepository {
@@ -123,6 +136,8 @@ export interface MomentRepository {
   /** Bounded, filtered read for dashboard sections — one query per section. */
   listFiltered(filter: MomentListFilter): Promise<MomentEvent[]>;
   stats(): Promise<MomentStats>;
+  /** `today` = org-local ISO date from the caller's clock. */
+  workStats(today: string): Promise<MomentWorkStats>;
   radar(query: MomentRadarQuery): Promise<Paginated<MomentEvent>>;
   create(input: CreateMomentInput): Promise<MomentEvent>;
   updateStatus(id: MomentEventId, status: MomentEventStatus): Promise<void>;
@@ -292,6 +307,9 @@ export interface TaskRepository {
   ): Promise<CrmTask[]>;
   listByAccount(accountId: AccountId, limit: number): Promise<CrmTask[]>;
   listByOpportunity(opportunityId: OpportunityId, limit: number): Promise<CrmTask[]>;
+  /** opportunity_id -> earliest-due OPEN/IN_PROGRESS task, one bulk query
+   * (spec §26 "Next Activity" — never a per-opportunity loop). */
+  nextOpenTaskByOpportunities(ids: OpportunityId[]): Promise<Map<string, CrmTask>>;
 }
 
 // ---------- CRM Contacts ----------

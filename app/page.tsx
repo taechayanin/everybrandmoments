@@ -10,12 +10,15 @@ import {
   StatCard,
   StatusBadge,
 } from "@/components/ui";
+import { MyWorkToday } from "@/components/crm/my-work-today";
 import { getCommandCenter } from "@/lib/application/moments/get-command-center";
+import { DEMO_USER } from "@/lib/services/authz";
 import { priorityOf, totalScore } from "@/lib/domain/score";
 import { SLA_BY_PRIORITY, shortDate, thDate, walletRange } from "@/lib/format";
 
 export default async function CommandCenter() {
-  const view = await getCommandCenter();
+  // DEMO_USER is the temporary actor until Sprint 7 auth.
+  const view = await getCommandCenter(DEMO_USER);
 
   return (
     <div>
@@ -32,6 +35,15 @@ export default async function CommandCenter() {
         <StatCard label="Proposal / Negotiation" value={view.proposals.length} accent="text-amber-600" hint="รอปิดภายใน 30 วัน" />
         <StatCard label="Won เดือนนี้" value={view.wonThisMonth} accent="text-emerald-600" hint="ส.ค. 2569" />
         <StatCard label="At-Risk Accounts" value={view.atRiskCount} accent="text-orange-600" hint="Recover + Return" />
+      </div>
+
+      {/* My Work Today (spec §18) — what should I do today? */}
+      <div className="mt-6">
+        <SectionTitle
+          title="My Work Today"
+          subtitle="งานของคุณวันนี้ — เกินกำหนด / วันนี้ / ถัดไป"
+        />
+        <MyWorkToday work={view.myWork} accountNames={view.taskAccountNames} />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-3">

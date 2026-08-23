@@ -58,6 +58,7 @@ import type {
   MomentRadarQuery,
   MomentRepository,
   MomentStats,
+  MomentWorkStats,
   OpportunityRepository,
   Paginated,
   Repositories,
@@ -384,15 +385,23 @@ class D1AccountRepository implements AccountRepository {
         `SELECT
            SUM(CASE WHEN customer_since IS NOT NULL AND customer_since != '' THEN 1 ELSE 0 END) AS active,
            SUM(CASE WHEN health = 'Healthy' THEN 1 ELSE 0 END) AS healthy,
+           SUM(CASE WHEN health = 'At Risk' THEN 1 ELSE 0 END) AS at_risk,
            COALESCE(SUM(lifetime_value), 0) AS ltv,
            COALESCE(SUM(gross_profit), 0) AS gp
          FROM accounts WHERE organization_id = ?`,
       )
       .bind(ORG)
-      .first<{ active: number | null; healthy: number | null; ltv: number; gp: number }>();
+      .first<{
+        active: number | null;
+        healthy: number | null;
+        at_risk: number | null;
+        ltv: number;
+        gp: number;
+      }>();
     return {
       activeAccounts: row?.active ?? 0,
       healthyCount: row?.healthy ?? 0,
+      atRiskCount: row?.at_risk ?? 0,
       totalLtv: row?.ltv ?? 0,
       totalGp: row?.gp ?? 0,
     };
@@ -503,6 +512,14 @@ class D1MomentRepository implements MomentRepository {
       conditions.push(`status IN (${inClause(ACTIVE_MOMENT_STATUSES.length)})`);
       binds.push(...ACTIVE_MOMENT_STATUSES);
     }
+    if (filter.expectedFrom) {
+      conditions.push("expected_event_date >= ?");
+      binds.push(filter.expectedFrom);
+    }
+    if (filter.expectedTo) {
+      conditions.push("expected_event_date <= ?");
+      binds.push(filter.expectedTo);
+    }
     const order = filter.orderByExpectedDateDesc
       ? "expected_event_date DESC"
       : "detected_at DESC";
@@ -531,6 +548,37 @@ class D1MomentRepository implements MomentRepository {
       detected: row?.detected ?? 0,
       hot: row?.hot ?? 0,
       won: row?.won ?? 0,
+    };
+  }
+
+  async workStats(today: string): Promise<MomentWorkStats> {
+    const total =
+      "(score_business_fit + score_intent + score_timing + score_wallet + score_relationship)";
+    const activeIn = `status IN (${inClause(ACTIVE_MOMENT_STATUSES.length)})`;
+    const row = await this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN ${activeIn} AND ${total} >= 85 THEN 1 ELSE 0 END) AS active_hot,
+           SUM(CASE WHEN detected_at = ? THEN 1 ELSE 0 END) AS new_today,
+           SUM(CASE WHEN julianday(?) - julianday(detected_at) BETWEEN 0 AND 7 THEN 1 ELSE 0 END) AS new_week,
+           SUM(CASE WHEN status IN ('Qualified','Meeting Booked','Discovery Completed','Solution Design') THEN 1 ELSE 0 END) AS qualified,
+           SUM(CASE WHEN status = 'Won' AND substr(expected_event_date, 1, 7) = substr(?, 1, 7) THEN 1 ELSE 0 END) AS won_month
+         FROM moment_events WHERE organization_id = ?`,
+      )
+      .bind(...ACTIVE_MOMENT_STATUSES, today, today, today, ORG)
+      .first<{
+        active_hot: number | null;
+        new_today: number | null;
+        new_week: number | null;
+        qualified: number | null;
+        won_month: number | null;
+      }>();
+    return {
+      activeHot: row?.active_hot ?? 0,
+      newToday: row?.new_today ?? 0,
+      newThisWeek: row?.new_week ?? 0,
+      qualifiedActive: row?.qualified ?? 0,
+      wonThisMonth: row?.won_month ?? 0,
     };
   }
 
@@ -1440,6 +1488,31 @@ class D1TaskRepository implements TaskRepository {
       .bind(ORG, opportunityId, limit)
       .all<Row>();
     return res.results.map(mapCrmTask);
+  }
+
+  async nextOpenTaskByOpportunities(
+    ids: OpportunityId[],
+  ): Promise<Map<string, CrmTask>> {
+    const out = new Map<string, CrmTask>();
+    if (ids.length === 0) return out;
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(
+          `SELECT * FROM (
+             SELECT *, ROW_NUMBER() OVER (
+               PARTITION BY opportunity_id
+               ORDER BY (due_date IS NULL), due_date, id
+             ) AS rn
+             FROM tasks
+             WHERE organization_id = ? AND opportunity_id IN (${inClause(chunk.length)})
+               AND status IN ('OPEN','IN_PROGRESS')
+           ) WHERE rn = 1`,
+        )
+        .bind(ORG, ...chunk)
+        .all<Row>();
+      for (const r of res.results) out.set(r.opportunity_id, mapCrmTask(r));
+    }
+    return out;
   }
 }
 

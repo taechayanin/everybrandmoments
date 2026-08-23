@@ -4,6 +4,8 @@
 // index on (organization_id, dedupe_key) makes INSERT OR IGNORE race-safe —
 // closing an event early can never resurrect the same occurrence.
 
+import { momentActivityKey } from "../../../lib/domain/activity";
+
 const ORG = "ORG-001";
 
 async function createRuleEvent(
@@ -22,6 +24,7 @@ async function createRuleEvent(
   },
 ): Promise<boolean> {
   const now = new Date().toISOString();
+  const eventId = `ME-${crypto.randomUUID()}`;
   const res = await db
     .prepare(
       `INSERT OR IGNORE INTO moment_events (
@@ -34,13 +37,32 @@ async function createRuleEvent(
        ) VALUES (?, ?, ?, ?, ?, 'Rule Engine', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'Detected', ?, 1.0, ?, ?, ?, ?)`,
     )
     .bind(
-      `ME-${crypto.randomUUID()}`, ORG, input.accountId, input.momentCode, input.subMoment,
+      eventId, ORG, input.accountId, input.momentCode, input.subMoment,
       input.detail, now.slice(0, 10), input.expectedEventDate,
       ...input.scores,
       input.action, input.momentCode, input.ruleId, input.dedupeKey, now, now,
     )
     .run();
-  return (res.meta.changes ?? 0) > 0;
+  const created = (res.meta.changes ?? 0) > 0;
+  if (created) {
+    // System timeline row (Step 5) — only when the occurrence was actually
+    // inserted, and keyed by the event id, so a repeated cron run (which
+    // skips the event insert) never duplicates the activity either.
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO activities (
+           id, organization_id, account_id, moment_event_id, activity_type,
+           title, body, occurred_at, created_at, updated_at, client_request_id
+         ) VALUES (?, ?, ?, ?, 'MOMENT_DETECTED', ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        `ACT-${crypto.randomUUID()}`, ORG, input.accountId, eventId,
+        `ตรวจพบ Moment — ${input.momentCode}`, input.subMoment,
+        now, now, now, momentActivityKey("DETECTED", eventId),
+      )
+      .run();
+  }
+  return created;
 }
 
 /** RULE-RETURN-180: no order for ≥180 days → EBM Return (PRD §62). */

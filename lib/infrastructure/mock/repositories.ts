@@ -48,6 +48,7 @@ import type {
   MomentRadarQuery,
   MomentRepository,
   MomentStats,
+  MomentWorkStats,
   OpportunityRepository,
   Paginated,
   Repositories,
@@ -113,6 +114,7 @@ class MockAccountRepository implements AccountRepository {
     return {
       activeAccounts: ACCOUNTS.filter((a) => a.customerSince).length,
       healthyCount: ACCOUNTS.filter((a) => a.health === "Healthy").length,
+      atRiskCount: ACCOUNTS.filter((a) => a.health === "At Risk").length,
       totalLtv: ACCOUNTS.reduce((s, a) => s + a.ltv, 0),
       totalGp: ACCOUNTS.reduce((s, a) => s + a.grossProfit, 0),
     };
@@ -169,6 +171,12 @@ class MockMomentRepository implements MomentRepository {
     if (filter.activeOnly) {
       items = items.filter((e) => isActiveMomentStatus(e.status));
     }
+    if (filter.expectedFrom) {
+      items = items.filter((e) => e.expectedEventDate >= filter.expectedFrom!);
+    }
+    if (filter.expectedTo) {
+      items = items.filter((e) => e.expectedEventDate <= filter.expectedTo!);
+    }
     items.sort(
       filter.orderByExpectedDateDesc
         ? (a, b) => b.expectedEventDate.localeCompare(a.expectedEventDate)
@@ -182,6 +190,29 @@ class MockMomentRepository implements MomentRepository {
       detected: events.length,
       hot: events.filter((e) => priorityOf(totalScore(e.score)) === "HOT").length,
       won: events.filter((e) => e.status === "Won").length,
+    };
+  }
+
+  async workStats(today: string): Promise<MomentWorkStats> {
+    const days = (from: string, to: string) =>
+      Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86_400_000);
+    return {
+      activeHot: events.filter(
+        (e) => isActiveMomentStatus(e.status) && priorityOf(totalScore(e.score)) === "HOT",
+      ).length,
+      newToday: events.filter((e) => e.detectedAt === today).length,
+      newThisWeek: events.filter((e) => {
+        const d = days(e.detectedAt, today);
+        return d >= 0 && d <= 7;
+      }).length,
+      qualifiedActive: events.filter((e) =>
+        ["Qualified", "Meeting Booked", "Discovery Completed", "Solution Design"].includes(
+          e.status,
+        ),
+      ).length,
+      wonThisMonth: events.filter(
+        (e) => e.status === "Won" && e.expectedEventDate.slice(0, 7) === today.slice(0, 7),
+      ).length,
     };
   }
 
@@ -612,6 +643,30 @@ class MockTaskRepository implements TaskRepository {
 
   async listByOpportunity(opportunityId: OpportunityId, limit: number): Promise<CrmTask[]> {
     return crmTasks.filter((t) => t.opportunityId === opportunityId).slice(0, limit);
+  }
+
+  async nextOpenTaskByOpportunities(
+    ids: OpportunityId[],
+  ): Promise<Map<string, CrmTask>> {
+    const wanted = new Set<string>(ids);
+    const out = new Map<string, CrmTask>();
+    const candidates = crmTasks
+      .filter(
+        (t) =>
+          t.opportunityId !== null &&
+          wanted.has(t.opportunityId) &&
+          (t.status === "OPEN" || t.status === "IN_PROGRESS"),
+      )
+      .sort((a, b) => {
+        if (a.dueDate === null && b.dueDate === null) return a.id.localeCompare(b.id);
+        if (a.dueDate === null) return 1;
+        if (b.dueDate === null) return -1;
+        return a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id);
+      });
+    for (const t of candidates) {
+      if (!out.has(t.opportunityId!)) out.set(t.opportunityId!, t);
+    }
+    return out;
   }
 }
 
