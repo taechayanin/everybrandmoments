@@ -352,10 +352,14 @@ createNoteAction, logCallAction, logMeetingAction, createTaskAction, completeTas
 ## Open Questions
 
 1. ~~Figma URL/page/node~~ → ได้ design PDF แล้ว (ดู Figma section); ยังอยากได้ Figma URL จริงเพื่อดู node ละเอียด
-2. **Scope alignment สำหรับ Step 4** — design ใหม่มี Leads module + dashboard ใหม่ + deal stages 8 ขั้นที่ต่างจาก `OpportunityStage` ปัจจุบัน ตัวเลือก:
-   - (a) Step 4 ทำ Account 360 + Activity Composer ตามแผนเดิม โดยยึดภาษา visual/component จาก design PDF (ตาราง, ป้ายกำกับ, layout) — Leads/Dashboard/stage ใหม่แยกเป็น sprint ถัดไป
-   - (b) revise แผนใหม่ให้ครอบ design ทั้งหมด (ต้องทำ IMPLEMENTATION_PLAN รอบใหม่ + review)
-   แนะนำ (a) — CRM Activity Layer จบก่อนแล้วค่อยต่อยอด
+
+## Resolved (reviewer decision 2026-08-23): Step 4 scope = Option A
+
+Design PDF ใช้เป็น **visual/interaction language เท่านั้น** — ไม่ขยาย scope ของ CRM Activity Layer sprint
+
+**Step 4 ทำเฉพาะ:** Account 360, Quick Actions, Activity Timeline, Note/Call/Meeting Composer, Contacts/Buying Roles, Tasks/Follow-up, Opportunity/Moment context ตามแผนที่อนุมัติ
+
+**Step 4 ห้ามทำ (แยกไป sprint ใหม่ + PLAN GATE ใหม่):** Leads module, bulk lead editing, HOT/WARM/COLD/EVENT lead labels, global Dashboard ใหม่, pipeline 8-stage ใหม่, Visit Plan, pipeline stage model ใหม่ — และ business/domain architecture เดิมต้องไม่เปลี่ยน
 
 ---
 
