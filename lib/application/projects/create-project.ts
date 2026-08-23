@@ -8,6 +8,7 @@ import {
   CreateProjectSchema,
   type CreateProjectInput,
 } from "@/lib/validation/project";
+import { validateProjectContextRelations } from "./validate-project-context";
 
 /**
  * Step 3 — createProject: always lands as DRAFT (stage NULL). Activation is
@@ -21,14 +22,24 @@ export async function createProject(
   const input = CreateProjectSchema.parse(raw);
   const repos = await getRepositories();
 
-  const [account, event] = await Promise.all([
-    repos.accounts.getById(input.accountId),
-    repos.moments.getById(input.momentEventId),
-  ]);
+  const account = await repos.accounts.getById(input.accountId);
   if (!account) throw new Error(`Account not found: ${input.accountId}`);
-  if (!event) throw new Error(`Moment event not found: ${input.momentEventId}`);
-  if (event.accountId !== account.id) {
-    throw new Error("Moment event does not belong to the given account");
+
+  // Industry prefills from the account but is SNAPSHOT onto the project.
+  const industryId = input.industryId ?? account.industryId ?? undefined;
+
+  // Canonical relationship validation (Step-3 fix P1-1): org/account-true
+  // moment, sub belongs to industry, selectable type, owner in org.
+  const relationErrors = await validateProjectContextRelations(repos, {
+    accountId: account.id,
+    momentEventId: input.momentEventId,
+    industryId: industryId ?? null,
+    subIndustryId: input.subIndustryId ?? null,
+    projectTypeId: input.projectTypeId ?? null,
+    ownerId: input.ownerId,
+  });
+  if (relationErrors.length > 0) {
+    throw new Error(`project context invalid: ${relationErrors.join(", ")}`);
   }
   if (input.solutionIds?.length) {
     const solutions = await Promise.all(
@@ -39,11 +50,8 @@ export async function createProject(
     }
   }
 
-  // Industry prefills from the account but is SNAPSHOT onto the project.
-  const industryId = input.industryId ?? account.industryId ?? undefined;
-
   const { opportunity, created } = await repos.opportunities.create({
-    momentEventId: event.id,
+    momentEventId: input.momentEventId,
     accountId: account.id,
     name: input.name,
     status: "DRAFT",
@@ -67,15 +75,26 @@ export async function createProject(
   // Idempotency conflict (reviewer §4): the same key with a materially
   // different payload is an error — never silently the original project.
   if (!created) {
+    const storedSolutionIds = await repos.opportunities.listSolutionIds(
+      opportunity.id,
+    );
     const requested = projectCreateFingerprint({
       accountId: account.id,
-      momentEventId: event.id,
+      momentEventId: input.momentEventId,
       name: input.name,
       status: "DRAFT",
       expectedRevenue: input.expectedRevenue,
+      expectedGP: input.expectedGP,
+      closeDate: input.closeDate,
+      expectedDeliveryDate: input.expectedDeliveryDate ?? null,
       industryId: industryId ?? null,
+      subIndustryId: input.subIndustryId ?? null,
       projectTypeId: input.projectTypeId ?? null,
       ownerId: input.ownerId,
+      brief: input.brief ?? null,
+      nextAction: input.nextAction,
+      nextActionDate: input.nextActionDate ?? null,
+      solutionIds: input.solutionIds ?? [],
     });
     const stored = projectCreateFingerprint({
       accountId: opportunity.accountId,
@@ -83,9 +102,17 @@ export async function createProject(
       name: opportunity.name,
       status: "DRAFT",
       expectedRevenue: opportunity.expectedRevenue,
+      expectedGP: opportunity.expectedGP,
+      closeDate: opportunity.closeDate,
+      expectedDeliveryDate: opportunity.expectedDeliveryDate,
       industryId: opportunity.industryId,
+      subIndustryId: opportunity.subIndustryId,
       projectTypeId: opportunity.projectTypeId,
       ownerId: opportunity.ownerId,
+      brief: opportunity.brief,
+      nextAction: opportunity.nextAction,
+      nextActionDate: opportunity.nextActionDate,
+      solutionIds: storedSolutionIds,
     });
     if (requested !== stored) {
       throw new IdempotencyConflictError(input.clientRequestId);

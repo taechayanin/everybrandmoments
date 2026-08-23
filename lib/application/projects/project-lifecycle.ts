@@ -23,6 +23,7 @@ import {
   type UpdateProjectNextActionInput,
   type UpdateProjectStageInput,
 } from "@/lib/validation/project";
+import { validateProjectContextRelations } from "./validate-project-context";
 
 // Step 3 — lifecycle use cases. Every state change goes through ONE canonical
 // rule set (domain/opportunity.ts) and ONE atomic repository primitive
@@ -55,6 +56,7 @@ export async function activateProject(
   const merged = {
     accountId: project.accountId,
     industryId: input.industryId ?? project.industryId,
+    subIndustryId: input.subIndustryId ?? project.subIndustryId,
     momentEventId: project.momentEventId,
     projectTypeId: input.projectTypeId ?? project.projectTypeId,
     ownerId: project.ownerId,
@@ -62,9 +64,15 @@ export async function activateProject(
     nextAction: input.nextAction ?? project.nextAction,
     nextActionDate: input.nextActionDate ?? project.nextActionDate,
   };
+  // Canonical completeness (domain gate) + canonical relationships (P1-1):
+  // both must hold on the FINAL state before the funnel opens.
   const errors = activationGateErrors(merged);
   if (errors.length > 0) {
     throw new Error(`activation gate failed: ${errors.join(", ")}`);
+  }
+  const relationErrors = await validateProjectContextRelations(repos, merged);
+  if (relationErrors.length > 0) {
+    throw new Error(`project context invalid: ${relationErrors.join(", ")}`);
   }
 
   const { applied, opportunity } = await repos.opportunities.applyTransition({
@@ -221,10 +229,43 @@ export async function updateProject(
   if (project.status === "WON" || project.status === "LOST" || project.status === "CANCELLED") {
     throw new Error(`Closed projects are immutable (status: ${project.status})`);
   }
-  if (input.projectTypeId !== undefined) {
-    const pt = await repos.projectTypes.getById(input.projectTypeId);
-    if (!pt || !pt.active || !pt.selectable) {
-      throw new Error("project type ต้องเป็นรายการจริงจาก master (เลือก sentinel ไม่ได้)");
+
+  // Step-3 fix P1-2 — the invariant survives every context mutation: when
+  // the patch touches industry/sub/type, the RESULTING state must pass the
+  // same canonical validation used at activation. DRAFT may stay incomplete
+  // (relations of what IS set must still hold); an ACTIVE project must
+  // remain fully valid — legacy rows keep working until a context edit,
+  // which then requires full enrichment in the same change.
+  const touchesContext =
+    input.industryId !== undefined ||
+    input.subIndustryId !== undefined ||
+    input.projectTypeId !== undefined;
+  if (touchesContext) {
+    const finalCtx = {
+      accountId: project.accountId,
+      momentEventId: project.momentEventId,
+      industryId: input.industryId ?? project.industryId,
+      subIndustryId:
+        input.subIndustryId === undefined ? project.subIndustryId : input.subIndustryId,
+      projectTypeId: input.projectTypeId ?? project.projectTypeId,
+      ownerId: project.ownerId,
+    };
+    const relationErrors = await validateProjectContextRelations(repos, finalCtx);
+    if (relationErrors.length > 0) {
+      throw new Error(`project context invalid: ${relationErrors.join(", ")}`);
+    }
+    if (project.status === "ACTIVE") {
+      const gateErrors = activationGateErrors({
+        ...finalCtx,
+        expectedRevenue: input.expectedRevenue ?? project.expectedRevenue,
+        nextAction: project.nextAction,
+        nextActionDate: project.nextActionDate,
+      });
+      if (gateErrors.length > 0) {
+        throw new Error(
+          `ACTIVE project must stay fully valid: ${gateErrors.join(", ")}`,
+        );
+      }
     }
   }
   const updated = await repos.opportunities.updateFields(

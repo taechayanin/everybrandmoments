@@ -241,9 +241,18 @@ export interface ProjectCreateFingerprintInput {
   name: string;
   status: ProjectStatus;
   expectedRevenue: number;
+  expectedGP: number;
+  closeDate: string;
+  expectedDeliveryDate: string | null;
   industryId: IndustryId | null;
+  subIndustryId: IndustryId | null;
   projectTypeId: ProjectTypeId | null;
   ownerId: UserId;
+  brief: string | null;
+  nextAction: string;
+  nextActionDate: string | null;
+  /** Deterministic: compared as a SORTED set — order never matters. */
+  solutionIds: readonly string[];
 }
 
 export function projectCreateFingerprint(
@@ -251,8 +260,13 @@ export function projectCreateFingerprint(
 ): string {
   return [
     input.accountId, input.momentEventId, input.name.trim(), input.status,
-    String(input.expectedRevenue), input.industryId ?? "-",
+    String(input.expectedRevenue), String(input.expectedGP),
+    input.closeDate, input.expectedDeliveryDate ?? "-",
+    input.industryId ?? "-", input.subIndustryId ?? "-",
     input.projectTypeId ?? "-", input.ownerId,
+    (input.brief ?? "").trim() || "-",
+    input.nextAction.trim(), input.nextActionDate ?? "-",
+    [...input.solutionIds].sort().join(","),
   ].join("|");
 }
 

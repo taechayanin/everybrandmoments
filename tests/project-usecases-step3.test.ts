@@ -386,7 +386,7 @@ describe("updateProject", () => {
         projectTypeId: UNSPECIFIED_PROJECT_TYPE_ID,
         actorId: ACTOR,
       }),
-    ).rejects.toThrow(/sentinel|master/);
+    ).rejects.toThrow(/project_type_not_selectable/);
     const cancelled = await cancelProject({
       opportunityId: project.id,
       cancelReason: "ทดสอบความ immutable",
@@ -485,6 +485,174 @@ describe("next-action invariant + risk rules", () => {
     // next action date in the future → clean.
     expect(flags).not.toContain("NO_NEXT_ACTION");
     expect(typeof atRisk).toBe("boolean");
+  });
+});
+
+describe("context relationship validation (Step-3 fix P1-1)", () => {
+  it("rejects a moment that belongs to a different account", async () => {
+    await expect(
+      createProject({
+        ...fullContext(),
+        momentEventId: "ME-2026-000002", // ACC-002's moment, project on ACC-001
+        clientRequestId: rid(),
+      }),
+    ).rejects.toThrow(/moment_belongs_to_different_account/);
+  });
+
+  it("rejects a moment outside the organization", async () => {
+    await expect(
+      createProject({
+        ...fullContext(),
+        momentEventId: "ME-OTHERORG-1",
+        clientRequestId: rid(),
+      }),
+    ).rejects.toThrow(/moment_not_found_in_organization/);
+  });
+
+  it("rejects a sub-industry that is not under the selected industry", async () => {
+    await expect(
+      createProject({
+        ...fullContext(),
+        subIndustryId: "IND-FNB-CAFE", // industry is IND-HEALTH-CLINIC's ecosystem
+        clientRequestId: rid(),
+      }),
+    ).rejects.toThrow(/sub_industry_not_in_selected_industry/);
+    // Also at activation time.
+    const { project } = await createProject({ ...fullContext(), clientRequestId: rid() });
+    await expect(
+      activateProject({
+        opportunityId: project.id,
+        subIndustryId: "IND-FNB-CAFE",
+        clientRequestId: rid(),
+        actorId: ACTOR,
+      }),
+    ).rejects.toThrow(/sub_industry_not_in_selected_industry/);
+  });
+
+  it("valid group+sub pairing passes end-to-end", async () => {
+    const { project } = await createProject({
+      ...fullContext(),
+      industryId: "IND-HEALTH",
+      subIndustryId: "IND-HEALTH-CLINIC",
+      clientRequestId: rid(),
+    });
+    const activated = await activateProject({
+      opportunityId: project.id,
+      clientRequestId: rid(),
+      actorId: ACTOR,
+    });
+    expect(activated.status).toBe("ACTIVE");
+    expect(activated.subIndustryId).toBe("IND-HEALTH-CLINIC");
+  });
+
+  it("rejects an unknown/non-selectable project type on create", async () => {
+    await expect(
+      createProject({
+        ...fullContext(),
+        projectTypeId: "PT-UNSPECIFIED",
+        clientRequestId: rid(),
+      }),
+    ).rejects.toThrow(/project_type_not_selectable/);
+    await expect(
+      createProject({
+        ...fullContext(),
+        projectTypeId: "PT-DOES-NOT-EXIST",
+        clientRequestId: rid(),
+      }),
+    ).rejects.toThrow(/project_type_not_selectable/);
+  });
+
+  it("rejects an owner outside the organization", async () => {
+    await expect(
+      createProject({
+        ...fullContext(),
+        ownerId: "USR-OTHERORG",
+        clientRequestId: rid(),
+      }),
+    ).rejects.toThrow(/owner_not_in_organization/);
+  });
+});
+
+describe("ACTIVE update invariant (Step-3 fix P1-2)", () => {
+  it("industry change that orphans the sub-industry is rejected on ACTIVE", async () => {
+    const { project } = await createProject({
+      ...fullContext(),
+      industryId: "IND-HEALTH",
+      subIndustryId: "IND-HEALTH-CLINIC",
+      clientRequestId: rid(),
+    });
+    const active = await activateProject({
+      opportunityId: project.id,
+      clientRequestId: rid(),
+      actorId: ACTOR,
+    });
+    await expect(
+      updateProject({
+        opportunityId: active.id,
+        industryId: "IND-FNB", // sub IND-HEALTH-CLINIC no longer belongs
+        actorId: ACTOR,
+      }),
+    ).rejects.toThrow(/sub_industry_not_in_selected_industry/);
+    // Moving industry AND sub together stays valid.
+    const moved = await updateProject({
+      opportunityId: active.id,
+      industryId: "IND-FNB",
+      subIndustryId: "IND-FNB-CAFE",
+      actorId: ACTOR,
+    });
+    expect(moved.industryId).toBe("IND-FNB");
+    expect(moved.subIndustryId).toBe("IND-FNB-CAFE");
+  });
+
+  it("DRAFT may stay incomplete, but provided references must still relate", async () => {
+    const { project } = await createProject({ ...baseCreate(), clientRequestId: rid() });
+    // DRAFT: setting a valid type alone is fine (still incomplete overall).
+    const updated = await updateProject({
+      opportunityId: project.id,
+      projectTypeId: "PT-UNIFORM",
+      actorId: ACTOR,
+    });
+    expect(updated.projectTypeId).toBe("PT-UNIFORM");
+    // But a mismatched sub-industry is rejected even on DRAFT.
+    await expect(
+      updateProject({
+        opportunityId: project.id,
+        subIndustryId: "IND-FNB-CAFE",
+        actorId: ACTOR,
+      }),
+    ).rejects.toThrow(/sub_industry_not_in_selected_industry/);
+  });
+});
+
+describe("idempotency fingerprint covers all material inputs", () => {
+  it("different solution selection under the same key → IDEMPOTENCY_CONFLICT", async () => {
+    const input = { ...fullContext(), solutionIds: ["SOL-START-001", "SOL-BUILD-001"] };
+    await createProject(input);
+    await expect(
+      createProject({ ...input, solutionIds: ["SOL-START-001"] }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+  });
+
+  it("same solution SET in a different order is NOT a conflict (deterministic)", async () => {
+    const input = { ...fullContext(), solutionIds: ["SOL-START-001", "SOL-BUILD-001"] };
+    const first = await createProject(input);
+    const retry = await createProject({
+      ...input,
+      solutionIds: ["SOL-BUILD-001", "SOL-START-001"],
+    });
+    expect(retry.created).toBe(false);
+    expect(retry.project.id).toBe(first.project.id);
+  });
+
+  it("brief / dates / GP are material — changing them conflicts", async () => {
+    const input = fullContext();
+    await createProject(input);
+    await expect(
+      createProject({ ...input, closeDate: "2026-12-31" }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+    await expect(
+      createProject({ ...input, expectedGP: 0.99 }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
   });
 });
 

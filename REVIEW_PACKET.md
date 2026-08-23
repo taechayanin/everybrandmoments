@@ -1,7 +1,13 @@
 # REVIEW PACKET
 
 ## Step
-Project Pipeline Step 3 — Project Application Use Cases
+Project Pipeline Step 3 — Project Application Use Cases (+ fix rev 2: context relations + ACTIVE update invariant)
+
+## FIX REV 2 (STEP 3 REVIEW — 2 P1)
+**P1-1 Context relationship validation** — canonical ตัวเดียว `validateProjectContextRelations()` (`lib/application/projects/validate-project-context.ts`): moment ต้องอยู่ org เดียว (org-scoped lookup) **และ** account เดียวกับ project; sub_industry ต้องเป็นลูกของ industry ที่เลือก; project_type ต้อง exists+active+**selectable** (sentinel ไม่ผ่านเป็นค่าใหม่เสมอ); owner ต้องเป็น user จริงใน org — ใช้ร่วมโดย create / activate / update ไม่มี re-implement
+**P1-2 ACTIVE invariant หลัง update** — `updateProject` ตรวจ **final state** เมื่อ patch แตะ context (industry/sub/type): relations ต้อง valid เสมอ (DRAFT ด้วย) และถ้า ACTIVE ต้องผ่าน canonical gate เต็ม (reuse `activationGateErrors`) — ตัวอย่าง reviewer ทั้งสอง (ตั้ง sentinel บน ACTIVE / เปลี่ยน industry จน sub หลุด) reject จริงแล้ว; legacy ACTIVE ยังอ่าน/เปลี่ยน stage/แก้ commercial fields ได้ — การแตะ context บน legacy = ต้อง enrich ให้ครบในคราวเดียว
+**Fingerprint ครบ material inputs** — เพิ่ม expectedGP, closeDate, expectedDeliveryDate, subIndustryId, brief, nextAction, nextActionDate และ **solutionIds แบบ sorted set** (สลับลำดับ = ไม่ conflict, เปลี่ยนชุด = IDEMPOTENCY_CONFLICT)
+Fix commit: `fix(project): canonical context relations + ACTIVE update invariant + full fingerprint (Step 3 rev 2)` — เทสต์เพิ่ม 11 (36 รวมในไฟล์ Step 3) → **216/216 passing**, typecheck/lint/build PASS
 
 ## COMMIT
 1 logical commit: `feat(project): lifecycle use cases — create/activate/stage/close/cancel/next-action/risk (Pipeline Step 3)`
@@ -48,7 +54,7 @@ Legacy ACTIVE + PT-UNSPECIFIED: **อ่านได้ + เปลี่ยน 
 mock `updateFields` เดิมใช้ `Object.assign` ซึ่ง copy ค่า `undefined` → ล้าง field ได้ ขัดกับ D1 (undefined = no-change) — แก้ให้ skip undefined เหมือน D1 แล้ว และเขียนเทสต์เคส missing-industry ใหม่ให้ตรงไปตรงมา (สร้าง draft ไร้ industry ผ่าน repo ตรง = จำลอง unmapped account)
 
 ## TESTS
-**205/205 passing** (+4 real-API smoke ข้าม) — Step 3 เพิ่ม 25 ครอบทุกข้อในรายการ reviewer: create DRAFT / activate complete / missing industry / missing moment (domain — schema ทำให้ impossible โดยชอบ) / missing type / PT-UNSPECIFIED / missing next action date / cross-account contact / idempotent exact retry / conflict payload / stage atomic history (forward+backward+reason) / WON clears stage / LOST clears+requires reason / CANCELLED clears+requires reason (จาก DRAFT และ ACTIVE) / legacy ACTIVE operable+surfaced / risk rules ครบ 5 flag + DRAFT/closed ว่าง / org isolation / updateProject (sentinel reject + closed immutable) / next-action invariant
+**216/216 passing** (+4 real-API smoke ข้าม) — Step 3 เพิ่ม 36 (รวม fix rev 2) ครอบทุกข้อในรายการ reviewer: create DRAFT / activate complete / missing industry / missing moment (domain — schema ทำให้ impossible โดยชอบ) / missing type / PT-UNSPECIFIED / missing next action date / cross-account contact / idempotent exact retry / conflict payload / stage atomic history (forward+backward+reason) / WON clears stage / LOST clears+requires reason / CANCELLED clears+requires reason (จาก DRAFT และ ACTIVE) / legacy ACTIVE operable+surfaced / risk rules ครบ 5 flag + DRAFT/closed ว่าง / org isolation / updateProject (sentinel reject + closed immutable) / next-action invariant
 
 ## TYPECHECK
 PASS
