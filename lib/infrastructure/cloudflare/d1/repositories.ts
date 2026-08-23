@@ -1207,6 +1207,28 @@ class D1OpportunityRepository implements OpportunityRepository {
     }));
   }
 
+  async lastStageChangeByOpportunities(
+    ids: OpportunityId[],
+  ): Promise<Map<OpportunityId, string>> {
+    const out = new Map<OpportunityId, string>();
+    for (const chunk of chunked(ids)) {
+      if (chunk.length === 0) continue;
+      const res = await this.db
+        .prepare(
+          `SELECT opportunity_id, MAX(changed_at) AS last_change
+           FROM project_stage_history
+           WHERE organization_id = ? AND opportunity_id IN (${inClause(chunk.length)})
+           GROUP BY opportunity_id`,
+        )
+        .bind(ORG, ...chunk)
+        .all<Row>();
+      for (const r of res.results) {
+        out.set(r.opportunity_id as OpportunityId, r.last_change);
+      }
+    }
+    return out;
+  }
+
   async addProjectContact(input: AddProjectContactInput): Promise<{ added: boolean }> {
     // Same-organization membership enforced in-statement: the INSERT only
     // fires when both the opportunity AND the contact live in this org.

@@ -511,6 +511,19 @@ class MockOpportunityRepository implements OpportunityRepository {
     return this.stageHistory.filter((h) => h.opportunityId === id);
   }
 
+  async lastStageChangeByOpportunities(
+    ids: OpportunityId[],
+  ): Promise<Map<OpportunityId, string>> {
+    const wanted = new Set(ids);
+    const out = new Map<OpportunityId, string>();
+    for (const h of this.stageHistory) {
+      if (!wanted.has(h.opportunityId)) continue;
+      const prev = out.get(h.opportunityId);
+      if (!prev || h.changedAt > prev) out.set(h.opportunityId, h.changedAt);
+    }
+    return out;
+  }
+
   async addProjectContact(input: AddProjectContactInput): Promise<{ added: boolean }> {
     if (!opportunities.some((o) => o.id === input.opportunityId)) {
       throw new Error(`Unknown opportunity: ${input.opportunityId}`);

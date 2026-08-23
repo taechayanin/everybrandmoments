@@ -303,6 +303,11 @@ export interface OpportunityRepository {
   create(input: CreateOpportunityInput): Promise<{ opportunity: Opportunity; created: boolean }>;
   listSolutionIds(id: OpportunityId): Promise<SolutionId[]>;
   listStageHistory(id: OpportunityId): Promise<ProjectStageHistoryEntry[]>;
+  /** Bulk: latest stage-history changed_at per opportunity (risk read model —
+   * no per-row history loads). Chunked ≤50 inside. */
+  lastStageChangeByOpportunities(
+    ids: OpportunityId[],
+  ): Promise<Map<OpportunityId, string>>;
   /** { added: false } = duplicate (opportunity, contact, role). Throws on a
    * contact outside the organization or unknown opportunity. */
   addProjectContact(input: AddProjectContactInput): Promise<{ added: boolean }>;

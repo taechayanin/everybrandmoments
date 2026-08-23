@@ -30,7 +30,7 @@ const NAV = [
   { group: "ทำงานกับลูกค้า", items: [
     { href: "/accounts", label: "04 · Business Accounts", icon: Building2 },
     { href: "/workspace", label: "05 · Solution Workspace", icon: Sparkles },
-    { href: "/opportunities", label: "06 · Opportunity Queue", icon: Briefcase },
+    { href: "/opportunities", label: "06 · Project Pipeline", icon: Briefcase },
     { href: "/solutions", label: "07 · Solution Library", icon: Library },
   ]},
   { group: "Operations", items: [
