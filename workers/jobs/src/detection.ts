@@ -1,4 +1,4 @@
-import type { MomentCode } from "../../../lib/domain/moment";
+import { ACTIVE_MOMENT_STATUSES, type MomentCode } from "../../../lib/domain/moment";
 import { detectWithClaude, type AiDetectorEnv } from "./ai-detection";
 import {
   DetectionResultSchema,
@@ -116,49 +116,60 @@ export async function detectMomentFromSignals(
     return;
   }
 
+  // Only IDs that passed the org/account-scoped SELECT may be written to —
+  // never trust job.signalIds beyond the lookup (review 🔴 §3).
+  const validSignalIds = signals.results.map((s) => s.id);
+
   // Level 3 (AI) when an API key is configured; Level 2 keyword rules
-  // otherwise or on any AI failure. Both honor the DetectionResult contract.
-  const aiResult = await detectWithClaude(
+  // otherwise. AI refusal/invalid output falls back to rules; transient AI
+  // errors throw so the queue retries (review 🟡 §1).
+  const aiOutcome = await detectWithClaude(
     env,
     signals.results.map((s) => ({
       sourceType: s.source_type,
       rawText: s.raw_text ?? "",
     })),
   );
-  const result = aiResult ?? detect(signals.results.map((s) => s.raw_text ?? ""));
-  const detectorName = aiResult ? aiResult.model : DETECTOR;
-  const detectorVersion = aiResult ? "structured-output" : DETECTOR_VERSION;
+  if (aiOutcome.type === "retry") throw aiOutcome.error;
 
-  // Dedup: one active moment per (account, moment code) — attach evidence to
-  // the existing event instead of creating a duplicate.
-  const existing = await db
-    .prepare(
-      `SELECT id FROM moment_events
-       WHERE organization_id = ? AND account_id = ? AND moment_code = ?
-         AND status IN ('Detected', 'Review', 'Contacted', 'Qualified')`,
-    )
-    .bind(job.organizationId, job.accountId, result.momentCode)
-    .first<{ id: string }>();
+  const aiResult = aiOutcome.type === "success" ? aiOutcome.result : null;
+  const result = aiResult ?? detect(signals.results.map((s) => s.raw_text ?? ""));
+  const detectorName = aiOutcome.type === "success" ? aiOutcome.model : DETECTOR;
+  const detectorVersion =
+    aiOutcome.type === "success" ? "structured-output" : DETECTOR_VERSION;
+
+  // Keep only AI-recommended solutions that exist in the catalog (review 🟡 §2).
+  let solutionIds: string[] = [];
+  if (result.recommendedSolutionIds.length > 0) {
+    const found = await db
+      .prepare(
+        `SELECT id FROM solutions
+         WHERE organization_id = ? AND active = 1
+           AND id IN (${result.recommendedSolutionIds.map(() => "?").join(", ")})`,
+      )
+      .bind(job.organizationId, ...result.recommendedSolutionIds)
+      .all<{ id: string }>();
+    solutionIds = found.results.map((r) => r.id);
+  }
 
   const now = new Date().toISOString();
-  let eventId: string;
+  // Occurrence identity: one active moment per (account, moment code).
+  // The unique index on (organization_id, dedupe_key) makes concurrent
+  // deliveries race-safe (review 🔴 §4) — INSERT OR IGNORE, then read back.
+  const dedupeKey = `SIGNAL:${job.organizationId}:${job.accountId}:${result.momentCode}`;
+  const eventId = `ME-${crypto.randomUUID()}`;
 
-  if (existing) {
-    eventId = existing.id;
-  } else {
-    eventId = `ME-${crypto.randomUUID()}`;
-    // Conservative default score — Customer Solution re-scores at
-    // qualification (SOP step 5). Intent is signal-driven.
-    await db
+  const statements = [
+    db
       .prepare(
-        `INSERT INTO moment_events (
+        `INSERT OR IGNORE INTO moment_events (
            id, organization_id, account_id, moment_code, sub_moment,
            trigger_source, trigger_detail, detected_at, expected_event_date,
            score_business_fit, score_intent, score_timing, score_wallet, score_relationship,
            potential_wallet_min, potential_wallet_max,
            recommended_action, status, next_expected_moment,
-           detection_confidence, detected_by, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 15, ?, 10, 5, 5, 0, 0, ?, 'Detected', ?, ?, ?, ?, ?)`,
+           detection_confidence, detected_by, dedupe_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 15, ?, 10, 5, 5, 0, 0, ?, 'Detected', ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         eventId, job.organizationId, job.accountId, result.momentCode, result.subMoment,
@@ -166,18 +177,56 @@ export async function detectMomentFromSignals(
         Math.round(result.confidence * 20), // intent /25 scales with confidence
         RULES.find((r) => r.moment === result.momentCode)?.action ?? "Review Moment ใหม่",
         result.momentCode,
-        result.confidence, `${detectorName}@${detectorVersion}`, now, now,
-      )
-      .run();
-  }
+        result.confidence, `${detectorName}@${detectorVersion}`, dedupeKey, now, now,
+      ),
+  ];
+  await db.batch(statements);
 
-  await db
+  // Resolve the surviving event for this occurrence: the row we just inserted,
+  // or (when OR IGNORE hit the unique index) the active event that beat us.
+  const survivor = await db
     .prepare(
-      `UPDATE moment_signals SET moment_event_id = ?, confidence = ?, model_name = ?, model_version = ?
-       WHERE id IN (${job.signalIds.map(() => "?").join(", ")})`,
+      `SELECT id FROM moment_events
+       WHERE organization_id = ? AND (
+         dedupe_key = ? OR (
+           account_id = ? AND moment_code = ?
+           AND status IN (${ACTIVE_MOMENT_STATUSES.map(() => "?").join(", ")})
+         )
+       )
+       ORDER BY created_at DESC LIMIT 1`,
     )
-    .bind(eventId, result.confidence, detectorName, detectorVersion, ...job.signalIds)
-    .run();
+    .bind(
+      job.organizationId, dedupeKey, job.accountId, result.momentCode,
+      ...ACTIVE_MOMENT_STATUSES,
+    )
+    .first<{ id: string }>();
+  const finalEventId = survivor?.id ?? eventId;
+  const deduped = finalEventId !== eventId;
+
+  // Attach evidence + persist validated AI solution recommendations + mark
+  // signals processed — one atomic batch, all org/account scoped.
+  const followUps = [
+    db
+      .prepare(
+        `UPDATE moment_signals
+         SET moment_event_id = ?, confidence = ?, model_name = ?, model_version = ?,
+             processing_status = 'processed'
+         WHERE organization_id = ? AND account_id = ?
+           AND id IN (${validSignalIds.map(() => "?").join(", ")})`,
+      )
+      .bind(
+        finalEventId, result.confidence, detectorName, detectorVersion,
+        job.organizationId, job.accountId, ...validSignalIds,
+      ),
+    ...solutionIds.map((sid) =>
+      db
+        .prepare(
+          "INSERT OR IGNORE INTO moment_event_solutions (moment_event_id, solution_id) VALUES (?, ?)",
+        )
+        .bind(finalEventId, sid),
+    ),
+  ];
+  await db.batch(followUps);
 
   console.log(
     JSON.stringify({
@@ -185,8 +234,9 @@ export async function detectMomentFromSignals(
       accountId: job.accountId,
       momentCode: result.momentCode,
       confidence: result.confidence,
-      eventId,
-      deduped: Boolean(existing),
+      eventId: finalEventId,
+      deduped,
+      solutionsAttached: solutionIds.length,
       source: detectorName,
     }),
   );

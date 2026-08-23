@@ -39,26 +39,38 @@ describe("Sales brief (PRD §46)", () => {
 });
 
 describe("Human verification (SOP step 3)", () => {
-  it("confirm stamps verifier and promotes Detected → Review", async () => {
+  it("confirm stamps verifier, promotes Detected → Review, and is idempotent", async () => {
     const repos = await getRepositories();
     // ME-2026-000017 is a Detected event in mock data (Bangkok Bike engage)
     const before = await repos.moments.getById("ME-2026-000017");
     expect(before?.status).toBe("Detected");
 
-    await confirmMoment("ME-2026-000017", "USR-010");
+    const first = await confirmMoment("ME-2026-000017", "USR-010");
+    expect(first.changed).toBe(true);
 
     const after = await repos.moments.getById("ME-2026-000017");
     expect(after?.verifiedBy).toBe("USR-010");
     expect(after?.verifiedAt).toBeTruthy();
     expect(after?.status).toBe("Review");
+
+    // Second decision is a no-op — nothing overwritten (review 🟡 §6).
+    const second = await confirmMoment("ME-2026-000017", "USR-011");
+    expect(second.changed).toBe(false);
+    const unchanged = await repos.moments.getById("ME-2026-000017");
+    expect(unchanged?.verifiedBy).toBe("USR-010");
   });
 
   it("reject stamps verifier and closes the moment as Lost", async () => {
-    await rejectMoment("ME-2026-000018", "USR-011");
+    const { changed } = await rejectMoment("ME-2026-000018", "USR-011");
+    expect(changed).toBe(true);
     const repos = await getRepositories();
     const after = await repos.moments.getById("ME-2026-000018");
     expect(after?.verifiedBy).toBe("USR-011");
     expect(after?.status).toBe("Lost");
+
+    // Cannot re-decide a rejected moment.
+    const again = await confirmMoment("ME-2026-000018", "USR-010");
+    expect(again.changed).toBe(false);
   });
 
   it("throws for unknown events", async () => {

@@ -4,6 +4,8 @@ import { scanAnniversaries, scanInactiveAccounts } from "./rules";
 
 export interface JobsEnv {
   DB: D1Database;
+  /** Producer for re-enqueueing orphaned signals (reconciliation). */
+  MOMENT_JOBS: Queue;
   /** Enables Level 3 AI detection when set (wrangler secret put ANTHROPIC_API_KEY). */
   ANTHROPIC_API_KEY?: string;
   /** Override the detection model (default claude-opus-5). */
@@ -53,12 +55,51 @@ export default {
         await scanInactiveAccounts(env.DB);
         break;
       default:
-        // Manual trigger via `wrangler dev --test-scheduled` runs both.
+        // Manual trigger via `wrangler dev --test-scheduled` runs everything.
         await scanAnniversaries(env.DB);
         await scanInactiveAccounts(env.DB);
     }
+    // Signal insert + queue send are not atomic (review 🔴 §6): re-enqueue
+    // signals stuck `pending` for >15 minutes on every scheduled run.
+    await reconcilePendingSignals(env);
   },
 } satisfies ExportedHandler<JobsEnv>;
+
+const RECONCILE_AFTER_MS = 15 * 60 * 1000;
+
+async function reconcilePendingSignals(env: JobsEnv): Promise<void> {
+  const cutoff = new Date(Date.now() - RECONCILE_AFTER_MS).toISOString();
+  const orphans = await env.DB.prepare(
+    `SELECT id, organization_id, account_id FROM moment_signals
+     WHERE processing_status = 'pending' AND detected_at < ?
+     LIMIT 50`,
+  )
+    .bind(cutoff)
+    .all<{ id: string; organization_id: string; account_id: string }>();
+
+  let requeued = 0;
+  for (const s of orphans.results) {
+    const job = JobSchema.safeParse({
+      jobType: "DETECT_MOMENT",
+      organizationId: s.organization_id,
+      accountId: s.account_id,
+      signalIds: [s.id],
+    });
+    if (!job.success) continue;
+    await env.MOMENT_JOBS.send(job.data);
+    await env.DB.prepare(
+      "UPDATE moment_signals SET processing_status = 'queued' WHERE id = ?",
+    )
+      .bind(s.id)
+      .run();
+    requeued += 1;
+  }
+  if (orphans.results.length > 0) {
+    console.log(
+      JSON.stringify({ event: "signal_reconciliation", found: orphans.results.length, requeued }),
+    );
+  }
+}
 
 async function handleJob(job: Job, env: JobsEnv): Promise<void> {
   switch (job.jobType) {

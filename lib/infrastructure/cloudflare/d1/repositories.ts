@@ -25,6 +25,7 @@ import type {
   AppointmentRepository,
   CreateMomentInput,
   CreateOpportunityInput,
+  CreateSignalInput,
   MasterMomentRepository,
   MomentRadarQuery,
   MomentRepository,
@@ -41,11 +42,33 @@ import { getBindings } from "../env";
 // org-scoped so multi-tenancy is a data change, not a code change (§37).
 const ORG = "ORG-001";
 
+// Master data (20 moments, solution catalog) changes rarely — cache per
+// isolate with a short TTL instead of re-querying per request (review perf §9,
+// plan §52). Dynamic sales data is never cached here.
+const MASTER_CACHE_TTL_MS = 60_000;
+
+interface CacheEntry<T> {
+  at: number;
+  data: T;
+}
+
+let masterMomentsCache: CacheEntry<MasterMoment[]> | null = null;
+let solutionsCache: CacheEntry<Solution[]> | null = null;
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Row = Record<string, any>;
 
 function inClause(n: number): string {
   return Array(n).fill("?").join(", ");
+}
+
+// D1 bounds bind parameters per statement — keep IN () lists small.
+const D1_SAFE_CHUNK_SIZE = 50;
+
+function chunked<T>(items: T[], size = D1_SAFE_CHUNK_SIZE): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 // ---------- row mappers ----------
@@ -237,6 +260,21 @@ class D1AccountRepository implements AccountRepository {
     return account ?? null;
   }
 
+  async getByIds(ids: AccountId[]): Promise<Account[]> {
+    if (ids.length === 0) return [];
+    const out: Row[] = [];
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(
+          `SELECT * FROM accounts WHERE organization_id = ? AND id IN (${inClause(chunk.length)})`,
+        )
+        .bind(ORG, ...chunk)
+        .all<Row>();
+      out.push(...res.results);
+    }
+    return hydrateAccounts(this.db, out);
+  }
+
   async search(input: AccountSearchInput): Promise<Paginated<Account>> {
     const offset = input.cursor ? Number.parseInt(input.cursor, 10) || 0 : 0;
     const conditions = ["organization_id = ?"];
@@ -276,6 +314,41 @@ class D1MomentRepository implements MomentRepository {
     if (!row) return null;
     const [event] = await hydrateEvents(this.db, [row]);
     return event ?? null;
+  }
+
+  async getByIds(ids: MomentEventId[]): Promise<MomentEvent[]> {
+    if (ids.length === 0) return [];
+    const rows: Row[] = [];
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(
+          `SELECT * FROM moment_events WHERE organization_id = ? AND id IN (${inClause(chunk.length)})`,
+        )
+        .bind(ORG, ...chunk)
+        .all<Row>();
+      rows.push(...res.results);
+    }
+    return hydrateEvents(this.db, rows);
+  }
+
+  async findActiveByAccounts(accountIds: AccountId[]): Promise<MomentEvent[]> {
+    if (accountIds.length === 0) return [];
+    const total =
+      "(score_business_fit + score_intent + score_timing + score_wallet + score_relationship)";
+    const rows: Row[] = [];
+    for (const chunk of chunked(accountIds)) {
+      const res = await this.db
+        .prepare(
+          `SELECT * FROM moment_events
+           WHERE organization_id = ? AND account_id IN (${inClause(chunk.length)})
+             AND status IN (${inClause(ACTIVE_MOMENT_STATUSES.length)})
+           ORDER BY ${total} DESC`,
+        )
+        .bind(ORG, ...chunk, ...ACTIVE_MOMENT_STATUSES)
+        .all<Row>();
+      rows.push(...res.results);
+    }
+    return hydrateEvents(this.db, rows);
   }
 
   async findActiveByAccount(accountId: AccountId): Promise<MomentEvent[]> {
@@ -396,27 +469,60 @@ class D1MomentRepository implements MomentRepository {
       .run();
   }
 
-  async verify(id: MomentEventId, verifiedBy: UserId): Promise<void> {
+  // Both decisions are atomic (D1 batch: state change + audit commit
+  // together) and idempotent (verified_at IS NULL guard — a second click or
+  // concurrent request changes nothing and returns false). Review §8, §Y6.
+  private async decide(
+    id: MomentEventId,
+    userId: UserId,
+    action: "confirm" | "reject",
+    reason?: string,
+  ): Promise<boolean> {
     const now = new Date().toISOString();
-    await this.db
-      .prepare(
-        `UPDATE moment_events
-         SET verified_by = ?, verified_at = ?, updated_at = ?,
-             status = CASE WHEN status = 'Detected' THEN 'Review' ELSE status END
-         WHERE organization_id = ? AND id = ?`,
-      )
-      .bind(verifiedBy, now, now, ORG, id)
-      .run();
-    await this.db
-      .prepare(
-        `INSERT INTO audit_logs (id, organization_id, user_id, entity_type, entity_id, action, after_json, created_at)
-         VALUES (?, ?, ?, 'moment_event', ?, 'verify', ?, ?)`,
-      )
-      .bind(
-        `AUD-${crypto.randomUUID()}`, ORG, verifiedBy, id,
-        JSON.stringify({ verified_by: verifiedBy, verified_at: now }), now,
-      )
-      .run();
+    const statusSql =
+      action === "confirm"
+        ? "CASE WHEN status = 'Detected' THEN 'Review' ELSE status END"
+        : "'Lost'";
+    const [update] = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE moment_events
+           SET verified_by = ?, verified_at = ?, updated_at = ?, status = ${statusSql}
+           WHERE organization_id = ? AND id = ? AND verified_at IS NULL`,
+        )
+        .bind(userId, now, now, ORG, id),
+      this.db
+        .prepare(
+          `INSERT INTO audit_logs (id, organization_id, user_id, entity_type, entity_id, action, after_json, created_at)
+           VALUES (?, ?, ?, 'moment_event', ?, ?, ?, ?)`,
+        )
+        .bind(
+          `AUD-${crypto.randomUUID()}`, ORG, userId, id, action,
+          JSON.stringify({ verified_by: userId, verified_at: now, reason: reason ?? null }),
+          now,
+        ),
+    ]);
+    const changed = (update.meta.changes ?? 0) > 0;
+    if (!changed) {
+      // Already decided — remove the just-written audit row so history only
+      // records decisions that actually changed state.
+      await this.db
+        .prepare(
+          `DELETE FROM audit_logs
+           WHERE organization_id = ? AND entity_id = ? AND action = ? AND created_at = ?`,
+        )
+        .bind(ORG, id, action, now)
+        .run();
+    }
+    return changed;
+  }
+
+  async confirm(id: MomentEventId, userId: UserId): Promise<boolean> {
+    return this.decide(id, userId, "confirm");
+  }
+
+  async reject(id: MomentEventId, userId: UserId, reason?: string): Promise<boolean> {
+    return this.decide(id, userId, "reject", reason);
   }
 }
 
@@ -457,6 +563,52 @@ class D1SignalRepository implements SignalRepository {
       .bind(ORG, accountId)
       .all<Row>();
     return res.results.map((r) => this.map(r));
+  }
+
+  async create(
+    input: CreateSignalInput,
+  ): Promise<{ signal: MomentSignal; created: boolean }> {
+    const id = `SIG-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    // Unique index on (organization_id, ingest_key) makes retries safe.
+    const res = await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO moment_signals (
+           id, organization_id, account_id, source_type, source_ref, source_url,
+           raw_text, detected_at, ingest_key, processing_status
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      )
+      .bind(
+        id, ORG, input.accountId, input.sourceType,
+        input.sourceRef ?? null, input.sourceUrl ?? null, input.rawText,
+        now, input.ingestKey,
+      )
+      .run();
+    const created = (res.meta.changes ?? 0) > 0;
+    const row = await this.db
+      .prepare(
+        "SELECT * FROM moment_signals WHERE organization_id = ? AND ingest_key = ?",
+      )
+      .bind(ORG, input.ingestKey)
+      .first<Row>();
+    if (!row) throw new Error("Signal insert failed");
+    return { signal: this.map(row), created };
+  }
+
+  async markStatus(
+    ids: string[],
+    status: "queued" | "processed" | "failed",
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    for (const chunk of chunked(ids)) {
+      await this.db
+        .prepare(
+          `UPDATE moment_signals SET processing_status = ?
+           WHERE organization_id = ? AND id IN (${inClause(chunk.length)})`,
+        )
+        .bind(status, ORG, ...chunk)
+        .run();
+    }
   }
 }
 
@@ -504,10 +656,15 @@ class D1MasterMomentRepository implements MasterMomentRepository {
   }
 
   async listAll(): Promise<MasterMoment[]> {
+    if (masterMomentsCache && Date.now() - masterMomentsCache.at < MASTER_CACHE_TTL_MS) {
+      return masterMomentsCache.data;
+    }
     const res = await this.db
       .prepare("SELECT * FROM master_moments WHERE active = 1 ORDER BY no")
       .all<Row>();
-    return this.hydrate(res.results);
+    const data = await this.hydrate(res.results);
+    masterMomentsCache = { at: Date.now(), data };
+    return data;
   }
 }
 
@@ -533,11 +690,16 @@ class D1SolutionRepository implements SolutionRepository {
   }
 
   async listAll(): Promise<Solution[]> {
+    if (solutionsCache && Date.now() - solutionsCache.at < MASTER_CACHE_TTL_MS) {
+      return solutionsCache.data;
+    }
     const res = await this.db
       .prepare("SELECT * FROM solutions WHERE organization_id = ? AND active = 1 ORDER BY id")
       .bind(ORG)
       .all<Row>();
-    return hydrateSolutions(this.db, res.results);
+    const data = await hydrateSolutions(this.db, res.results);
+    solutionsCache = { at: Date.now(), data };
+    return data;
   }
 }
 
@@ -607,6 +769,27 @@ class D1UserRepository implements UserRepository {
       role: row.role,
       center: row.center ?? undefined,
     };
+  }
+
+  async getByIds(ids: UserId[]): Promise<User[]> {
+    if (ids.length === 0) return [];
+    const out: User[] = [];
+    for (const chunk of chunked(ids)) {
+      const res = await this.db
+        .prepare(`SELECT * FROM users WHERE organization_id = ? AND id IN (${inClause(chunk.length)})`)
+        .bind(ORG, ...chunk)
+        .all<Row>();
+      out.push(
+        ...res.results.map((row: Row) => ({
+          id: row.id as UserId,
+          name: row.name,
+          nickname: row.nickname ?? row.name,
+          role: row.role,
+          center: row.center ?? undefined,
+        })),
+      );
+    }
+    return out;
   }
 
   async listAll(): Promise<User[]> {

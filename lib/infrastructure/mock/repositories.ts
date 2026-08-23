@@ -22,6 +22,7 @@ import type {
   AppointmentRepository,
   CreateMomentInput,
   CreateOpportunityInput,
+  CreateSignalInput,
   MasterMomentRepository,
   MomentRadarQuery,
   MomentRepository,
@@ -44,6 +45,8 @@ import { USERS } from "./users";
 // worker isolates — the D1 adapter is the durable implementation.
 const events: MomentEvent[] = [...MOMENT_EVENTS];
 const opportunities: Opportunity[] = [...OPPORTUNITIES];
+const signals: MomentSignal[] = [...MOCK_SIGNALS];
+const signalIngestKeys = new Map<string, string>(); // ingestKey -> signal id
 
 function paginate<T>(items: T[], limit: number, cursor?: string): Paginated<T> {
   const start = cursor ? Number.parseInt(cursor, 10) || 0 : 0;
@@ -55,6 +58,11 @@ function paginate<T>(items: T[], limit: number, cursor?: string): Paginated<T> {
 class MockAccountRepository implements AccountRepository {
   async getById(id: AccountId): Promise<Account | null> {
     return ACCOUNTS.find((a) => a.id === id) ?? null;
+  }
+
+  async getByIds(ids: AccountId[]): Promise<Account[]> {
+    const wanted = new Set(ids);
+    return ACCOUNTS.filter((a) => wanted.has(a.id));
   }
 
   async search(input: {
@@ -80,9 +88,21 @@ class MockMomentRepository implements MomentRepository {
     return events.find((e) => e.id === id) ?? null;
   }
 
+  async getByIds(ids: MomentEventId[]): Promise<MomentEvent[]> {
+    const wanted = new Set(ids);
+    return events.filter((e) => wanted.has(e.id));
+  }
+
   async findActiveByAccount(accountId: AccountId): Promise<MomentEvent[]> {
     return events
       .filter((e) => e.accountId === accountId && isActiveMomentStatus(e.status))
+      .sort((a, b) => totalScore(b.score) - totalScore(a.score));
+  }
+
+  async findActiveByAccounts(accountIds: AccountId[]): Promise<MomentEvent[]> {
+    const wanted = new Set(accountIds);
+    return events
+      .filter((e) => wanted.has(e.accountId) && isActiveMomentStatus(e.status))
       .sort((a, b) => totalScore(b.score) - totalScore(a.score));
   }
 
@@ -133,23 +153,59 @@ class MockMomentRepository implements MomentRepository {
     if (e) e.status = status;
   }
 
-  async verify(id: MomentEventId, verifiedBy: UserId): Promise<void> {
+  async confirm(id: MomentEventId, userId: UserId): Promise<boolean> {
     const e = events.find((x) => x.id === id);
-    if (e) {
-      e.verifiedBy = verifiedBy;
-      e.verifiedAt = new Date().toISOString();
-      if (e.status === "Detected") e.status = "Review";
-    }
+    if (!e || e.verifiedAt) return false; // idempotent — already decided
+    e.verifiedBy = userId;
+    e.verifiedAt = new Date().toISOString();
+    if (e.status === "Detected") e.status = "Review";
+    return true;
+  }
+
+  async reject(id: MomentEventId, userId: UserId): Promise<boolean> {
+    const e = events.find((x) => x.id === id);
+    if (!e || e.verifiedAt) return false;
+    e.verifiedBy = userId;
+    e.verifiedAt = new Date().toISOString();
+    e.status = "Lost";
+    return true;
   }
 }
 
 class MockSignalRepository implements SignalRepository {
   async listByEvent(momentEventId: MomentEventId): Promise<MomentSignal[]> {
-    return MOCK_SIGNALS.filter((s) => s.momentEventId === momentEventId);
+    return signals.filter((s) => s.momentEventId === momentEventId);
   }
 
   async listByAccount(accountId: AccountId): Promise<MomentSignal[]> {
-    return MOCK_SIGNALS.filter((s) => s.accountId === accountId);
+    return signals.filter((s) => s.accountId === accountId);
+  }
+
+  async create(
+    input: CreateSignalInput,
+  ): Promise<{ signal: MomentSignal; created: boolean }> {
+    const existingId = signalIngestKeys.get(input.ingestKey);
+    if (existingId) {
+      const existing = signals.find((s) => s.id === existingId)!;
+      return { signal: existing, created: false };
+    }
+    const signal: MomentSignal = {
+      id: `SIG-${crypto.randomUUID()}`,
+      accountId: input.accountId,
+      momentEventId: null,
+      sourceType: input.sourceType,
+      sourceRef: input.sourceRef,
+      sourceUrl: input.sourceUrl,
+      rawText: input.rawText,
+      detectedAt: new Date().toISOString(),
+    };
+    signals.push(signal);
+    signalIngestKeys.set(input.ingestKey, signal.id);
+    return { signal, created: true };
+  }
+
+  async markStatus(): Promise<void> {
+    // Mock signals carry no processing lifecycle — D1 adapter owns it.
   }
 }
 
@@ -197,6 +253,11 @@ class MockOpportunityRepository implements OpportunityRepository {
 class MockUserRepository implements UserRepository {
   async getById(id: UserId): Promise<User | null> {
     return USERS.find((u) => u.id === id) ?? null;
+  }
+
+  async getByIds(ids: UserId[]): Promise<User[]> {
+    const wanted = new Set(ids);
+    return USERS.filter((u) => wanted.has(u.id));
   }
 
   async listAll(): Promise<User[]> {

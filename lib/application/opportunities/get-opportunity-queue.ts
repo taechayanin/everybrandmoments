@@ -23,18 +23,25 @@ export async function getOpportunityQueue(): Promise<OpportunityQueueView> {
   const repos = await getRepositories();
   const opportunities = await repos.opportunities.listAll();
 
+  // Batch read model (review perf §9).
+  const [accounts, events, owners] = await Promise.all([
+    repos.accounts.getByIds([...new Set(opportunities.map((o) => o.accountId))]),
+    repos.moments.getByIds([...new Set(opportunities.map((o) => o.momentEventId))]),
+    repos.users.getByIds([...new Set(opportunities.map((o) => o.ownerId))]),
+  ]);
+  const accountMap = new Map(accounts.map((a) => [a.id, a]));
+  const eventMap = new Map(events.map((e) => [e.id, e]));
+  const ownerMap = new Map(owners.map((u) => [u.id, u]));
+
   const rows: OpportunityRow[] = [];
   for (const opportunity of opportunities) {
-    const [account, event, owner] = await Promise.all([
-      repos.accounts.getById(opportunity.accountId),
-      repos.moments.getById(opportunity.momentEventId),
-      repos.users.getById(opportunity.ownerId),
-    ]);
+    const account = accountMap.get(opportunity.accountId);
     if (!account) continue;
+    const owner = ownerMap.get(opportunity.ownerId);
     rows.push({
       opportunity,
       account,
-      event,
+      event: eventMap.get(opportunity.momentEventId) ?? null,
       ownerName: owner
         ? `${owner.nickname} (${owner.name.split(" ")[0]})`
         : opportunity.ownerId,

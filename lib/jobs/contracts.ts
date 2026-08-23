@@ -26,7 +26,13 @@ export const DetectMomentJobSchema = z.object({
   jobType: z.literal("DETECT_MOMENT"),
   organizationId,
   accountId,
-  signalIds: z.array(signalId).min(1),
+  // Bounded + unique: the consumer builds an IN (...) clause from these, and
+  // D1 has a bind-parameter limit — never let queue payload size the SQL.
+  signalIds: z
+    .array(signalId)
+    .min(1)
+    .max(50)
+    .refine((ids) => new Set(ids).size === ids.length, "signalIds must be unique"),
 });
 
 export const ScoreMomentJobSchema = z.object({
@@ -80,9 +86,16 @@ export const DetectionResultSchema = z.object({
   momentCode: z.enum(MOMENT_CODES as [string, ...string[]]),
   subMoment: z.string().min(1).max(200),
   confidence: z.number().min(0).max(1),
-  expectedEventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  reason: z.string().min(1),
-  recommendedSolutionIds: z.array(z.string().regex(/^SOL-/)).default([]),
+  // Must be a real calendar date, not just YYYY-MM-DD-shaped (2026-99-99).
+  expectedEventDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((v) => {
+      const d = new Date(`${v}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+    }, "expectedEventDate must be a valid calendar date"),
+  reason: z.string().min(1).max(1000),
+  recommendedSolutionIds: z.array(z.string().regex(/^SOL-/)).max(10).default([]),
 });
 
 export type DetectionResult = z.infer<typeof DetectionResultSchema>;
@@ -98,6 +111,12 @@ export const IngestSignalSchema = z.object({
   sourceRef: z.string().max(200).optional(),
   sourceUrl: z.string().url().max(500).optional(),
   rawText: z.string().min(1).max(5000),
+  /**
+   * Caller-supplied idempotency key. Retrying the same ingest (e.g. after a
+   * 500) with the same key returns the original signal instead of inserting a
+   * duplicate. Defaults to a hash of (accountId, sourceType, rawText).
+   */
+  ingestKey: z.string().min(8).max(128).optional(),
 });
 
 export type IngestSignalInput = z.input<typeof IngestSignalSchema>;

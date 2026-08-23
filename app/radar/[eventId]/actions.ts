@@ -3,35 +3,49 @@
 import { revalidatePath } from "next/cache";
 import { confirmMoment, rejectMoment } from "@/lib/application/moments/verify-moment";
 import { isMomentEventId } from "@/lib/domain/ids";
-
-// Auth arrives in Sprint 7 — until then the demo persona performs verifications.
-const CURRENT_USER = "USR-010" as const;
+import {
+  DEMO_USER,
+  WRITES_DISABLED_MESSAGE,
+  writesEnabled,
+} from "@/lib/services/authz";
 
 export interface VerifyActionResult {
   ok: boolean;
+  /** false when the moment was already decided (idempotent no-op). */
+  changed?: boolean;
   error?: string;
 }
 
-export async function confirmMomentAction(eventId: string): Promise<VerifyActionResult> {
+async function decide(
+  eventId: string,
+  action: "confirm" | "reject",
+): Promise<VerifyActionResult> {
+  if (!writesEnabled()) return { ok: false, error: WRITES_DISABLED_MESSAGE };
   if (!isMomentEventId(eventId)) return { ok: false, error: "Invalid event id" };
   try {
-    await confirmMoment(eventId, CURRENT_USER);
+    const { changed } =
+      action === "confirm"
+        ? await confirmMoment(eventId, DEMO_USER)
+        : await rejectMoment(eventId, DEMO_USER);
     revalidatePath(`/radar/${eventId}`);
     revalidatePath("/radar");
-    return { ok: true };
+    return { ok: true, changed };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+    console.error(
+      JSON.stringify({
+        event: "verify_action_error",
+        action,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    return { ok: false, error: "ไม่สามารถบันทึกได้ กรุณาลองใหม่" };
   }
 }
 
+export async function confirmMomentAction(eventId: string): Promise<VerifyActionResult> {
+  return decide(eventId, "confirm");
+}
+
 export async function rejectMomentAction(eventId: string): Promise<VerifyActionResult> {
-  if (!isMomentEventId(eventId)) return { ok: false, error: "Invalid event id" };
-  try {
-    await rejectMoment(eventId, CURRENT_USER);
-    revalidatePath(`/radar/${eventId}`);
-    revalidatePath("/radar");
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
-  }
+  return decide(eventId, "reject");
 }

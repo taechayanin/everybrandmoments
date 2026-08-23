@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { ZodError } from "zod";
 import { createMoment } from "@/lib/application/moments/create-moment";
+import { WRITES_DISABLED_MESSAGE, writesEnabled } from "@/lib/services/authz";
 import type { CreateMomentFormInput } from "@/lib/validation/moment";
 
 export interface CreateMomentActionResult {
@@ -14,6 +15,7 @@ export interface CreateMomentActionResult {
 export async function createMomentAction(
   input: CreateMomentFormInput,
 ): Promise<CreateMomentActionResult> {
+  if (!writesEnabled()) return { ok: false, error: WRITES_DISABLED_MESSAGE };
   try {
     const event = await createMoment(input);
     revalidatePath("/radar");

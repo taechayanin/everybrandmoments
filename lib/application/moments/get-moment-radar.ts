@@ -31,13 +31,22 @@ export async function getMomentRadar(input: MomentRadarInput): Promise<MomentRad
     cursor: input.cursor,
   });
 
+  // Batch read model (review perf §9): collect ids once, two bulk queries,
+  // hydrate via Maps — never one query per row.
+  const accountIds = [...new Set(page.items.map((e) => e.accountId))];
+  const ownerIds = [...new Set(page.items.map((e) => e.ownerId))];
+  const [accounts, owners] = await Promise.all([
+    repos.accounts.getByIds(accountIds),
+    repos.users.getByIds(ownerIds),
+  ]);
+  const accountMap = new Map(accounts.map((a) => [a.id, a]));
+  const ownerMap = new Map(owners.map((u) => [u.id, u]));
+
   const rows: RadarRow[] = [];
   for (const event of page.items) {
-    const [account, owner] = await Promise.all([
-      repos.accounts.getById(event.accountId),
-      repos.users.getById(event.ownerId),
-    ]);
+    const account = accountMap.get(event.accountId);
     if (!account) continue; // broken reference — skip rather than crash
+    const owner = ownerMap.get(event.ownerId);
     rows.push({
       event,
       account,

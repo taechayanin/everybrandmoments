@@ -32,10 +32,14 @@ export async function recommendSolutions({
   limit = 3,
 }: RecommendSolutionsInput): Promise<Solution[]> {
   const repos = await getRepositories();
+  // Solution catalog is master data — one (cached) load, then in-memory maps
+  // instead of a query per candidate (review perf §9).
+  const catalog = await repos.solutions.listAll();
+  const byId = new Map(catalog.map((s) => [s.id, s]));
+
   const ranked: Solution[] = [];
   const seen = new Set<string>();
-
-  const push = (s: Solution | null) => {
+  const push = (s: Solution | null | undefined) => {
     if (s && !seen.has(s.id)) {
       seen.add(s.id);
       ranked.push(s);
@@ -44,9 +48,7 @@ export async function recommendSolutions({
 
   // 1) Solutions explicitly recommended on the active moment event
   if (currentMoment) {
-    for (const id of currentMoment.recommendedSolutionIds) {
-      push(await repos.solutions.getById(id));
-    }
+    for (const id of currentMoment.recommendedSolutionIds) push(byId.get(id));
   }
 
   // 2) Whitespace gaps → category solutions
@@ -56,13 +58,13 @@ export async function recommendSolutions({
   ][]) {
     if (bought) continue;
     const id = GAP_SOLUTION_IDS[cat];
-    if (id) push(await repos.solutions.getById(id as Solution["id"]));
+    if (id) push(byId.get(id as Solution["id"]));
   }
 
   // 3) Other solutions for the current moment
   if (currentMoment) {
-    for (const s of await repos.solutions.listByMoment(currentMoment.momentType)) {
-      push(s);
+    for (const s of catalog) {
+      if (s.moment === currentMoment.momentType) push(s);
     }
   }
 

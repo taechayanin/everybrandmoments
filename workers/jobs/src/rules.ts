@@ -1,10 +1,10 @@
 // Scheduled rule-based moment creation (PRD §38, plan §2.5).
-// Idempotent: each scan skips accounts that already have an active event of
-// the target moment code.
+// Idempotent by BUSINESS OCCURRENCE, not by active status (review 🔴 §5):
+// each rule computes a dedupe_key identifying the occurrence, and the unique
+// index on (organization_id, dedupe_key) makes INSERT OR IGNORE race-safe —
+// closing an event early can never resurrect the same occurrence.
 
 const ORG = "ORG-001";
-
-const ACTIVE = "('Detected', 'Review', 'Contacted', 'Qualified', 'Meeting Booked', 'Discovery Completed', 'Solution Design', 'Proposal', 'Negotiation')";
 
 async function createRuleEvent(
   db: D1Database,
@@ -16,38 +16,31 @@ async function createRuleEvent(
     expectedEventDate: string;
     action: string;
     ruleId: string;
+    /** Occurrence identity, e.g. RULE-RETURN-180:ORG:ACC:<last_order_date>. */
+    dedupeKey: string;
     scores: [number, number, number, number, number];
   },
 ): Promise<boolean> {
-  const existing = await db
-    .prepare(
-      `SELECT id FROM moment_events
-       WHERE organization_id = ? AND account_id = ? AND moment_code = ? AND status IN ${ACTIVE}`,
-    )
-    .bind(ORG, input.accountId, input.momentCode)
-    .first();
-  if (existing) return false;
-
   const now = new Date().toISOString();
-  await db
+  const res = await db
     .prepare(
-      `INSERT INTO moment_events (
+      `INSERT OR IGNORE INTO moment_events (
          id, organization_id, account_id, moment_code, sub_moment,
          trigger_source, trigger_detail, detected_at, expected_event_date,
          score_business_fit, score_intent, score_timing, score_wallet, score_relationship,
          potential_wallet_min, potential_wallet_max,
          recommended_action, status, next_expected_moment,
-         detection_confidence, detected_by, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, 'Rule Engine', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'Detected', ?, 1.0, ?, ?, ?)`,
+         detection_confidence, detected_by, dedupe_key, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, 'Rule Engine', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'Detected', ?, 1.0, ?, ?, ?, ?)`,
     )
     .bind(
       `ME-${crypto.randomUUID()}`, ORG, input.accountId, input.momentCode, input.subMoment,
       input.detail, now.slice(0, 10), input.expectedEventDate,
       ...input.scores,
-      input.action, input.momentCode, input.ruleId, now, now,
+      input.action, input.momentCode, input.ruleId, input.dedupeKey, now, now,
     )
     .run();
-  return true;
+  return (res.meta.changes ?? 0) > 0;
 }
 
 /** RULE-RETURN-180: no order for ≥180 days → EBM Return (PRD §62). */
@@ -77,6 +70,8 @@ export async function scanInactiveAccounts(db: D1Database): Promise<void> {
       expectedEventDate: new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10),
       action: "สรุปประวัติ + มอบหมาย SDR ทำ Win-back",
       ruleId: "RULE-RETURN-180",
+      // Same inactivity spell = same occurrence; a new order resets it.
+      dedupeKey: `RULE-RETURN-180:${ORG}:${r.id}:${r.last_order}`,
       scores: [18, 10, 14, 8, 7],
     });
     if (made) created += 1;
@@ -122,6 +117,8 @@ export async function scanAnniversaries(db: D1Database): Promise<void> {
       expectedEventDate: anniversary.toISOString().slice(0, 10),
       action: "เสนอ Anniversary Set + มอบหมาย Account Owner",
       ruleId: "RULE-ANNIVERSARY-60",
+      // One moment per anniversary year, even if closed early in the window.
+      dedupeKey: `RULE-ANNIVERSARY:${ORG}:${r.id}:${anniversary.getUTCFullYear()}`,
       scores: [18, 8, 15, 8, 9],
     });
     if (made) created += 1;
