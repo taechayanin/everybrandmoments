@@ -73,6 +73,16 @@ export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 export const SUGGESTION_STATUSES = ["PENDING", "ACCEPTED", "IGNORED"] as const;
 export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
 
+/**
+ * "No Activity Without Next State" (spec §46): every logged interaction can
+ * declare where the relationship goes next. An application/domain concept —
+ * persisted in activity metadata, not a workflow engine.
+ */
+export const INTERACTION_NEXT_STATES = [
+  "FOLLOW_UP", "WAITING_CUSTOMER", "PROPOSAL", "NURTURE", "CLOSED", "NO_ACTION",
+] as const;
+export type InteractionNextState = (typeof INTERACTION_NEXT_STATES)[number];
+
 // ---------- stable idempotency keys (plan rev 4) ----------
 
 /** Follow-up task created together with a logged interaction. */

@@ -7,6 +7,7 @@ import {
   CONTACT_ROLES,
   CONTACT_STATUSES,
   INFLUENCE_LEVELS,
+  INTERACTION_NEXT_STATES,
   MEETING_TYPES,
   TASK_PRIORITIES,
   TASK_STATUSES,
@@ -46,6 +47,10 @@ const clientRequestId = z.string().min(8).max(80);
 const followUpFields = {
   nextAction: z.string().trim().max(500).optional(),
   nextActionAt: isoDateTime.optional(),
+  /** "Save + Create Follow-up" (spec §12) — requires nextAction. */
+  createFollowUp: z.boolean().optional(),
+  /** No Activity Without Next State (spec §46). */
+  nextState: z.enum(INTERACTION_NEXT_STATES).optional(),
 };
 
 const relationFields = {
@@ -120,7 +125,7 @@ export const CreateTaskSchema = z
     description: z.string().trim().max(2_000).optional(),
     dueDate: isoDate.optional(),
     assigneeId: userId.optional(),
-    priority: z.enum(TASK_PRIORITIES).default("NORMAL"),
+    priority: z.enum(TASK_PRIORITIES).optional(), // repository defaults NORMAL
     clientRequestId,
     ...relationFields,
   })
