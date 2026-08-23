@@ -16,11 +16,13 @@ import {
 import { CrmError } from "@/lib/application/activities/shared";
 import { createContact, updateContact } from "@/lib/application/contacts/create-contact";
 import { completeTask, createFollowUp } from "@/lib/application/tasks/create-follow-up";
+import { getAccountTimeline } from "@/lib/application/activities/get-account-timeline";
 import {
   CompleteTaskSchema,
   CreateContactSchema,
   CreateNoteSchema,
   CreateTaskSchema,
+  LoadTimelineSchema,
   LogCallSchema,
   LogMeetingSchema,
   UpdateActivitySchema,
@@ -155,6 +157,36 @@ export async function updateActivityAction(input: unknown): Promise<CrmActionRes
     return { ok: true };
   } catch (err) {
     return failure(err);
+  }
+}
+
+export interface TimelinePageResult {
+  ok: boolean;
+  error?: string;
+  items?: unknown[];
+  nextCursor?: string;
+  /** contactId -> {name, jobTitle} for attribution on the new page. */
+  contacts?: Record<string, { name: string; jobTitle: string | null }>;
+}
+
+/** Read path (no write gate): keyset load-more / filter for the timeline. */
+export async function loadTimelineAction(input: unknown): Promise<TimelinePageResult> {
+  try {
+    const data = parseOr(LoadTimelineSchema, input);
+    const page = await getAccountTimeline(data.accountId as never, {
+      limit: 20,
+      cursor: data.cursor,
+      types: data.types,
+    });
+    const contacts: Record<string, { name: string; jobTitle: string | null }> = {};
+    for (const [cid, c] of page.contactsById) {
+      contacts[cid] = { name: c.name, jobTitle: c.jobTitle };
+    }
+    return { ok: true, items: page.items, nextCursor: page.nextCursor, contacts };
+  } catch (err) {
+    if (err instanceof CrmError) return { ok: false, error: err.message };
+    console.error("[crm-action]", err);
+    return { ok: false, error: "โหลด Timeline ไม่สำเร็จ กรุณาลองใหม่" };
   }
 }
 

@@ -183,6 +183,15 @@ export const DecideSuggestionSchema = z
   .object({ suggestionId })
   .strict();
 
+/** Timeline load-more (read path) — keyset cursor from the previous page. */
+export const LoadTimelineSchema = z
+  .object({
+    accountId,
+    cursor: z.string().max(120).optional(),
+    types: z.array(z.enum(ACTIVITY_TYPES)).max(ACTIVITY_TYPES.length).optional(),
+  })
+  .strict();
+
 // ---------- Activity metadata (typed, stored as metadata_json) ----------
 
 export const CallMetadataSchema = z
